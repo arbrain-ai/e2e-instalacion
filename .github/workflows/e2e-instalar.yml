@@ -1,0 +1,208 @@
+# Instalación limpia de Arbrain con el prompt REAL en Windows y en Mac con HOME temporal (22 oct 2026, v0.2.8: la app
+# de escritorio). Debe terminar con Arbrain corriendo, la app instalada con su proceso vivo y Levy respondiendo.
+# Claude Code piensa con OpenRouter (secreto OPENROUTER_API_KEY) porque un runner no puede iniciar sesión con una
+# suscripción; esa misma llave se le da a Levy por Ajustes › Llaves al final (levy-responde.mjs).
+#
+# prepublicacion=true prueba una rama ANTES de etiquetar: la copia se sirve desde un espejo local de esa rama con una
+# etiqueta firmada por una llave desechable (el ancla de la prueba es esa llave; INSTALAR no la pisa si ya existe), y
+# los paquetes se bajan del release «pre-<version>» de este repo. Todo lo demás es el guion y los scripts reales.
+name: E2E instalar Arbrain · Windows y Mac
+on:
+  workflow_dispatch:
+    inputs:
+      rama:
+        default: 'main'
+        type: string
+      prepublicacion:
+        default: false
+        type: boolean
+      version:
+        description: 'Solo con prepublicacion: versión de la rama (sin v)'
+        default: ''
+        type: string
+      respuestas:
+        default: 'Respuestas por adelantado (prueba automática sin persona): no tengo carpeta anterior; no quiero respaldo en GitHub; Levy pensará con OpenRouter, así que no inicies sesión de Claude. Al terminar escribe una línea RESULTADO con la dirección de Arbrain y si la app de escritorio quedó abierta.'
+        type: string
+      modelo:
+        default: 'anthropic/claude-sonnet-5.5'
+        type: string
+permissions:
+  contents: read
+jobs:
+  e2e:
+    name: e2e · ${{ matrix.so }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 100
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, so: windows }
+          - { os: macos-latest, so: mac }
+    env:
+      RAMA: ${{ inputs.rama }}
+      PRE: ${{ inputs.prepublicacion }}
+      VERSION_PRE: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          path: e2e
+
+      - name: HOME temporal (Mac)
+        if: matrix.so == 'mac'
+        shell: bash
+        run: |
+          H="$RUNNER_TEMP/home"; mkdir -p "$H"
+          echo "HOME_PRUEBA=$H" >> "$GITHUB_ENV"
+
+      - name: HOME (Windows)
+        if: matrix.so == 'windows'
+        shell: bash
+        run: echo "HOME_PRUEBA=$(cygpath -u "$USERPROFILE")" >> "$GITHUB_ENV"
+
+      - name: Prepublicación · espejo local de la rama con etiqueta de prueba firmada
+        if: inputs.prepublicacion
+        shell: bash
+        run: |
+          set -euo pipefail
+          export HOME="$HOME_PRUEBA"
+          V="v$VERSION_PRE"; T="$RUNNER_TEMP/pre"; mkdir -p "$T" "$HOME/.config/arbrain"
+          ssh-keygen -q -t ed25519 -N '' -C prueba -f "$T/k"
+          echo "prueba namespaces=\"git\" $(cut -d' ' -f1,2 "$T/k.pub")" > "$HOME/.config/arbrain/firmas-permitidas"
+          base="https://github.com/arbrain-ai/e2e-instalacion/releases/download/pre-$VERSION_PRE"
+          for h in programa-darwin-arm64 programa-darwin-x64 programa-win32-x64 programa-linux-x64 programa-linux-arm64 \
+                   escritorio-darwin-arm64 escritorio-darwin-x64 escritorio-win32-x64 escritorio-linux-x64; do
+            curl -fsSL "$base/$h.huella" >> "$T/huellas" || true
+          done
+          cat "$T/huellas"
+          git clone -q --bare --branch "$RAMA" https://github.com/arbrain-ai/arbrain.git "$T/espejo.git"
+          git clone -q "$T/espejo.git" "$T/trabajo" && cd "$T/trabajo"
+          test "$(cat VERSION)" = "$VERSION_PRE"
+          git -c user.name=prueba -c user.email=prueba@ci -c gpg.format=ssh -c user.signingkey="$T/k" \
+            tag -s "$V" -m "Arbrain $V
+
+          $(cat "$T/huellas")" HEAD
+          git push -q origin "refs/tags/$V" "HEAD:refs/heads/main"
+          git -C "$T/espejo.git" symbolic-ref HEAD refs/heads/main
+          espejo="$T/espejo.git"; [ "$RUNNER_OS" != Windows ] || espejo="$(cygpath -m "$espejo")"
+          git config --global url."file://$( [ "$RUNNER_OS" = Windows ] && echo / )$espejo".insteadOf https://github.com/arbrain-ai/arbrain.git
+          git config --global --get-regexp '^url\.'
+          echo "ARBRAIN_PROGRAMA_BASE=$base" >> "$GITHUB_ENV"
+          echo "ARBRAIN_ESCRITORIO_BASE=$base" >> "$GITHUB_ENV"
+
+      - name: PC nueva (Windows, sin Node ni Python)
+        if: matrix.so == 'windows'
+        shell: pwsh
+        run: |
+          foreach ($s in 'Machine','User') {
+            $p = [Environment]::GetEnvironmentVariable('Path', $s)
+            $n = ($p -split ';' | Where-Object { $_ -and $_ -notmatch 'nodejs|Python|hostedtoolcache|npm|yarn|pnpm' }) -join ';'
+            [Environment]::SetEnvironmentVariable('Path', $n, $s)
+          }
+          Remove-Item -Recurse -Force 'C:\Program Files\nodejs' -ErrorAction SilentlyContinue
+
+      - name: Claude Code (instalador oficial, Windows)
+        if: matrix.so == 'windows'
+        shell: pwsh
+        run: irm https://claude.ai/install.ps1 | iex
+
+      - name: Claude Code (instalador oficial, Mac con HOME temporal)
+        if: matrix.so == 'mac'
+        shell: bash
+        run: |
+          export HOME="$HOME_PRUEBA"
+          curl -fsSL https://claude.ai/install.sh | bash
+          ls -la "$HOME/.local/bin/"
+
+      - name: El prompt real (Windows)
+        if: matrix.so == 'windows'
+        shell: pwsh
+        env:
+          OR_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          RESPUESTAS: ${{ inputs.respuestas }}
+          MODELO: ${{ inputs.modelo }}
+        run: |
+          $env:Path = "C:\Windows\system32;C:\Windows;C:\Windows\System32\WindowsPowerShell\v1.0;C:\Windows\System32\OpenSSH;C:\Program Files\Git\cmd;$env:USERPROFILE\.local\bin;$env:LOCALAPPDATA\Microsoft\WindowsApps"
+          if (Get-Command node -ErrorAction SilentlyContinue) { throw "node sigue visible" }
+          $env:ANTHROPIC_BASE_URL = 'https://openrouter.ai/api'
+          $env:ANTHROPIC_AUTH_TOKEN = $env:OR_KEY
+          $env:ANTHROPIC_API_KEY = ''
+          $env:ANTHROPIC_MODEL = $env:MODELO
+          $env:ANTHROPIC_DEFAULT_SONNET_MODEL = $env:MODELO
+          $env:ANTHROPIC_DEFAULT_HAIKU_MODEL = 'anthropic/claude-haiku-5.5'
+          $env:CLAUDE_CODE_GIT_BASH_PATH = 'C:\Program Files\Git\bin\bash.exe'
+          $prompt = "Instala Arbrain siguiendo https://github.com/arbrain-ai/arbrain/blob/$env:RAMA/INSTALAR.md"
+          if ($env:PRE -eq 'true') { $prompt += "`n`n(Prueba previa a publicar: el guion vigente es el de la rama $env:RAMA; léelo literal con curl -fsSL https://raw.githubusercontent.com/arbrain-ai/arbrain/$env:RAMA/INSTALAR.md. Todo lo demás, igual.)" }
+          "PROMPT: $prompt" | Tee-Object -FilePath "$env:RUNNER_TEMP\tiempo.txt"
+          Set-Location $env:USERPROFILE
+          $t0 = Get-Date
+          claude -p "$prompt`n`n$env:RESPUESTAS" --dangerously-skip-permissions --output-format stream-json --verbose > "$env:RUNNER_TEMP\transcript.jsonl"
+          $seg = [int]((Get-Date) - $t0).TotalSeconds
+          "SEGUNDOS_PROMPT=$seg" | Tee-Object -Append -FilePath "$env:RUNNER_TEMP\tiempo.txt"
+          "Prompt real de punta a punta (Windows): $seg s" >> $env:GITHUB_STEP_SUMMARY
+
+      - name: El prompt real (Mac, HOME temporal y PATH mínimo, sin Node)
+        if: matrix.so == 'mac'
+        shell: bash
+        env:
+          OR_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          RESPUESTAS: ${{ inputs.respuestas }}
+          MODELO: ${{ inputs.modelo }}
+        run: |
+          export HOME="$HOME_PRUEBA"
+          export PATH="$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          if command -v node >/dev/null; then echo "node sigue visible: $(command -v node)"; exit 1; fi
+          export ANTHROPIC_BASE_URL=https://openrouter.ai/api ANTHROPIC_AUTH_TOKEN="$OR_KEY" ANTHROPIC_API_KEY=
+          export ANTHROPIC_MODEL="$MODELO" ANTHROPIC_DEFAULT_SONNET_MODEL="$MODELO" ANTHROPIC_DEFAULT_HAIKU_MODEL=anthropic/claude-haiku-5.5
+          prompt="Instala Arbrain siguiendo https://github.com/arbrain-ai/arbrain/blob/$RAMA/INSTALAR.md"
+          if [ "$PRE" = true ]; then prompt="$prompt
+
+          (Prueba previa a publicar: el guion vigente es el de la rama $RAMA; léelo literal con curl -fsSL https://raw.githubusercontent.com/arbrain-ai/arbrain/$RAMA/INSTALAR.md. Todo lo demás, igual.)"; fi
+          echo "PROMPT: $prompt" | tee "$RUNNER_TEMP/tiempo.txt"
+          cd "$HOME"
+          t0=$(date +%s)
+          claude -p "$prompt
+
+          $RESPUESTAS" --dangerously-skip-permissions --output-format stream-json --verbose > "$RUNNER_TEMP/transcript.jsonl" || true
+          seg=$(( $(date +%s) - t0 ))
+          echo "SEGUNDOS_PROMPT=$seg" | tee -a "$RUNNER_TEMP/tiempo.txt"
+          echo "Prompt real de punta a punta (Mac): $seg s" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Comprobar Arbrain, la app y a Levy
+        if: always()
+        shell: bash
+        env:
+          OR_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          export HOME="$HOME_PRUEBA"
+          [ "$RUNNER_OS" != macOS ] || export PATH="$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          . ~/.arbrain/entorno.sh 2>/dev/null || true
+          node -e "const j=require('fs').readFileSync(process.env.RUNNER_TEMP+'/transcript.jsonl','utf8').trim().split('\n').map(l=>{try{return JSON.parse(l)}catch{return null}}).filter(Boolean);const r=j.filter(x=>x.type==='result').pop();console.log('RESULTADO:',r&&r.result&&r.result.slice(-1500));console.log('turnos',r&&r.num_turns,'costo',r&&r.total_cost_usd)" | tee -a "$GITHUB_STEP_SUMMARY" || true
+          cd ~/Arbrain/arbrain && node scripts/servidor.mjs estado | tee -a "$RUNNER_TEMP/tiempo.txt"
+          node scripts/servidor.mjs estado | grep -q Corriendo
+          node scripts/escritorio.mjs estado | tee -a "$RUNNER_TEMP/tiempo.txt" || true
+          git -C ~/Arbrain tag -l --format='%(refname:short) %(contents:subject)' 'v*' | tail -1 | tee -a "$RUNNER_TEMP/tiempo.txt"
+          if [ "$RUNNER_OS" = Windows ]; then L="$APPDATA/ai.arbrain.servidor/logs"; else L="$HOME/Library/Application Support/ai.arbrain.servidor/logs"; fi
+          grep -h "no hace falta compilar\|Compilo aquí\|Compilando" "$L/servidor.log" | tee -a "$RUNNER_TEMP/tiempo.txt" || true
+          tail -20 "$L/escritorio.log" 2>/dev/null || true
+          node "$GITHUB_WORKSPACE/e2e/levy-responde.mjs" | tee -a "$RUNNER_TEMP/tiempo.txt" "$GITHUB_STEP_SUMMARY"
+          exit "${PIPESTATUS[0]}"
+
+      - name: Captura de pantalla
+        if: always()
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then screencapture -x "$RUNNER_TEMP/pantalla.png" || true
+          else powershell -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms,System.Drawing; \$b=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds; \$i=New-Object System.Drawing.Bitmap \$b.Width,\$b.Height; [System.Drawing.Graphics]::FromImage(\$i).CopyFromScreen(\$b.Location,[System.Drawing.Point]::Empty,\$b.Size); \$i.Save('$RUNNER_TEMP\pantalla.png')" || true; fi
+
+      - name: Evidencia
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: e2e-${{ matrix.so }}
+          path: |
+            ${{ runner.temp }}/transcript.jsonl
+            ${{ runner.temp }}/tiempo.txt
+            ${{ runner.temp }}/pantalla.png
+          retention-days: 14
