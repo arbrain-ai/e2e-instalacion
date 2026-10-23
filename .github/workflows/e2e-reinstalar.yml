@@ -1,0 +1,240 @@
+# Reinstalar Arbrain desde cero con los prompts reales (23 oct 2026, v0.2.9): lo que Daniel muestra en vivo en la grupal.
+# 1) Instala la versión publicada en main (v0.2.8) con los mismos comandos de su INSTALAR, sin modelo.
+# 2) Prompt real «Desinstala Arbrain siguiendo …/INSTALAR.md»: todo debe quedar en ~/Arbrain-respaldos y apagado.
+# 3) Prompt real «Instala Arbrain siguiendo …/INSTALAR.md» de la rama nueva: Arbrain corriendo en la versión nueva, la
+#    app abierta y Levy respondiendo (levy-responde.mjs).
+# Con prepublicacion=true la rama nueva se sirve desde un espejo local con su etiqueta firmada por una llave desechable
+# que se AGREGA al ancla de la persona (las llaves reales siguen ahí), y los paquetes salen del release «pre-<version>».
+name: E2E reinstalar Arbrain desde cero · Windows y Mac
+on:
+  workflow_dispatch:
+    inputs:
+      rama:
+        default: 'main'
+        type: string
+      prepublicacion:
+        default: false
+        type: boolean
+      version:
+        description: 'Solo con prepublicacion: versión de la rama (sin v)'
+        default: ''
+        type: string
+      respuestas:
+        default: 'Respuestas por adelantado (prueba automática sin persona): si encuentras una carpeta anterior, no traigas nada (empieza en limpio); no quiero respaldo en GitHub; Levy pensará con OpenRouter, así que no inicies sesión de Claude. Al terminar escribe una línea RESULTADO con la dirección de Arbrain y si la app de escritorio quedó abierta.'
+        type: string
+      modelo:
+        default: 'anthropic/claude-sonnet-5.5'
+        type: string
+permissions:
+  contents: read
+jobs:
+  e2e:
+    name: reinstalar · ${{ matrix.so }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, so: windows }
+          - { os: macos-latest, so: mac }
+    env:
+      RAMA: ${{ inputs.rama }}
+      PRE: ${{ inputs.prepublicacion }}
+      VERSION_PRE: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          path: e2e
+
+      - name: HOME temporal (Mac)
+        if: matrix.so == 'mac'
+        shell: bash
+        run: |
+          H="$RUNNER_TEMP/home"; mkdir -p "$H"
+          echo "HOME_PRUEBA=$H" >> "$GITHUB_ENV"
+
+      - name: HOME (Windows)
+        if: matrix.so == 'windows'
+        shell: bash
+        run: echo "HOME_PRUEBA=$(cygpath -u "$USERPROFILE")" >> "$GITHUB_ENV"
+
+      - name: PC nueva (Windows, sin Node ni Python)
+        if: matrix.so == 'windows'
+        shell: pwsh
+        run: |
+          foreach ($s in 'Machine','User') {
+            $p = [Environment]::GetEnvironmentVariable('Path', $s)
+            $n = ($p -split ';' | Where-Object { $_ -and $_ -notmatch 'nodejs|Python|hostedtoolcache|npm|yarn|pnpm' }) -join ';'
+            [Environment]::SetEnvironmentVariable('Path', $n, $s)
+          }
+          Remove-Item -Recurse -Force 'C:\Program Files\nodejs' -ErrorAction SilentlyContinue
+
+      - name: Claude Code (instalador oficial, Windows)
+        if: matrix.so == 'windows'
+        shell: pwsh
+        run: irm https://claude.ai/install.ps1 | iex
+
+      - name: Claude Code (instalador oficial, Mac con HOME temporal)
+        if: matrix.so == 'mac'
+        shell: bash
+        run: |
+          export HOME="$HOME_PRUEBA"
+          curl -fsSL https://claude.ai/install.sh | bash
+
+      - name: 1 · Arbrain publicado, instalado con los pasos de su INSTALAR (sin modelo)
+        shell: bash
+        run: |
+          set -euo pipefail
+          export HOME="$HOME_PRUEBA"
+          if [ "$RUNNER_OS" = macOS ]; then export PATH="$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin"; else export PATH="$HOME/.local/bin:$PATH"; fi
+          git clone -q --origin dani https://github.com/arbrain-ai/arbrain.git ~/Arbrain && cd ~/Arbrain
+          mkdir -p ~/.config/arbrain
+          sed -n '/^arbrain-publicacion /p;/^arbrain-reserva /p' INSTALAR.md > ~/.config/arbrain/firmas-permitidas
+          test -s ~/.config/arbrain/firmas-permitidas
+          V="v$(cat VERSION)"; echo "VERSION_PREVIA=$V" | tee -a "$GITHUB_STEP_SUMMARY"
+          git -c gpg.format=ssh -c gpg.ssh.program=ssh-keygen -c gpg.ssh.allowedSignersFile="$HOME/.config/arbrain/firmas-permitidas" verify-tag "$V"
+          git switch -q -c mi-arbrain && git config --local user.name "Mi Arbrain" && git config --local user.email yo@mi-arbrain.local
+          bash arbrain/scripts/instalar/requisitos.sh | tail -1
+          . ~/.arbrain/entorno.sh
+          $PY arbrain/cerebro/sembrar.py && git add -A && git commit -qm "Mi capa: semilla" || true
+          cd arbrain
+          nohup node scripts/servidor.mjs --sin-navegador > "$HOME/.arbrain/arranque.log" 2>&1 &
+          for i in $(seq 1 120); do node scripts/servidor.mjs estado | head -1 | grep -q Corriendo && break; sleep 10; done
+          node scripts/servidor.mjs estado
+          node scripts/servidor.mjs arranque-automatico activar
+          node scripts/escritorio.mjs instalar || echo "AVISO: la app previa no se instaló"
+          node scripts/escritorio.mjs estado || true
+
+      - name: Prepublicación · espejo local de la rama nueva con etiqueta de prueba (se agrega al ancla)
+        if: inputs.prepublicacion
+        shell: bash
+        run: |
+          set -euo pipefail
+          export HOME="$HOME_PRUEBA"
+          V="v$VERSION_PRE"; T="$RUNNER_TEMP/pre"; mkdir -p "$T"
+          ssh-keygen -q -t ed25519 -N '' -C prueba -f "$T/k"
+          echo "prueba namespaces=\"git\" $(cut -d' ' -f1,2 "$T/k.pub")" >> "$HOME/.config/arbrain/firmas-permitidas"
+          base="https://github.com/arbrain-ai/e2e-instalacion/releases/download/pre-$VERSION_PRE"
+          for h in programa-darwin-arm64 programa-darwin-x64 programa-win32-x64 programa-linux-x64 programa-linux-arm64 \
+                   escritorio-darwin-arm64 escritorio-darwin-x64 escritorio-win32-x64 escritorio-linux-x64; do
+            curl -fsSL "$base/$h.huella" >> "$T/huellas" || true
+          done
+          cat "$T/huellas"
+          git clone -q --bare --branch "$RAMA" https://github.com/arbrain-ai/arbrain.git "$T/espejo.git"
+          git clone -q "$T/espejo.git" "$T/trabajo" && cd "$T/trabajo"
+          test "$(cat VERSION)" = "$VERSION_PRE"
+          git -c user.name=prueba -c user.email=prueba@ci -c gpg.format=ssh -c user.signingkey="$T/k" \
+            tag -s "$V" -m "Arbrain $V
+
+          $(cat "$T/huellas")" HEAD
+          git push -q origin "refs/tags/$V" "HEAD:refs/heads/main"
+          git -C "$T/espejo.git" symbolic-ref HEAD refs/heads/main
+          espejo="$T/espejo.git"; [ "$RUNNER_OS" != Windows ] || espejo="$(cygpath -m "$espejo")"
+          git config --global url."file://$( [ "$RUNNER_OS" = Windows ] && echo / )$espejo".insteadOf https://github.com/arbrain-ai/arbrain.git
+          echo "ARBRAIN_PROGRAMA_BASE=$base" >> "$GITHUB_ENV"
+          echo "ARBRAIN_ESCRITORIO_BASE=$base" >> "$GITHUB_ENV"
+
+      - name: 2 y 3 · Prompts reales «Desinstala» y luego «Instala» (Windows)
+        if: matrix.so == 'windows'
+        shell: pwsh
+        env:
+          OR_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          RESPUESTAS: ${{ inputs.respuestas }}
+          MODELO: ${{ inputs.modelo }}
+        run: |
+          $env:Path = "C:\Windows\system32;C:\Windows;C:\Windows\System32\WindowsPowerShell\v1.0;C:\Windows\System32\OpenSSH;C:\Program Files\Git\cmd;$env:USERPROFILE\.local\bin;$env:LOCALAPPDATA\Microsoft\WindowsApps"
+          $env:ANTHROPIC_BASE_URL = 'https://openrouter.ai/api'
+          $env:ANTHROPIC_AUTH_TOKEN = $env:OR_KEY
+          $env:ANTHROPIC_API_KEY = ''
+          $env:ANTHROPIC_MODEL = $env:MODELO
+          $env:ANTHROPIC_DEFAULT_SONNET_MODEL = $env:MODELO
+          $env:ANTHROPIC_DEFAULT_HAIKU_MODEL = 'anthropic/claude-haiku-5.5'
+          $env:CLAUDE_CODE_GIT_BASH_PATH = 'C:\Program Files\Git\bin\bash.exe'
+          $nota = ''
+          if ($env:PRE -eq 'true') { $nota = "`n`n(Prueba previa a publicar: el guion vigente es el de la rama $env:RAMA; léelo literal con curl -fsSL https://raw.githubusercontent.com/arbrain-ai/arbrain/$env:RAMA/INSTALAR.md. Todo lo demás, igual.)" }
+          Set-Location $env:USERPROFILE
+          $t0 = Get-Date
+          claude -p "Desinstala Arbrain siguiendo https://github.com/arbrain-ai/arbrain/blob/$env:RAMA/INSTALAR.md$nota" --dangerously-skip-permissions --output-format stream-json --verbose > "$env:RUNNER_TEMP\desinstalar.jsonl"
+          $s1 = [int]((Get-Date) - $t0).TotalSeconds
+          "Desinstalar (Windows): $s1 s" | Tee-Object -FilePath "$env:RUNNER_TEMP\tiempo.txt"
+          if (Test-Path "$env:USERPROFILE\Arbrain") { throw "~/Arbrain sigue ahí después de desinstalar" }
+          Get-ChildItem "$env:USERPROFILE\Arbrain-respaldos" | Tee-Object -Append -FilePath "$env:RUNNER_TEMP\tiempo.txt"
+          $t0 = Get-Date
+          claude -p "Instala Arbrain siguiendo https://github.com/arbrain-ai/arbrain/blob/$env:RAMA/INSTALAR.md$nota`n`n$env:RESPUESTAS" --dangerously-skip-permissions --output-format stream-json --verbose > "$env:RUNNER_TEMP\instalar.jsonl"
+          $s2 = [int]((Get-Date) - $t0).TotalSeconds
+          "Instalar desde cero (Windows): $s2 s" | Tee-Object -Append -FilePath "$env:RUNNER_TEMP\tiempo.txt"
+          Get-Content "$env:RUNNER_TEMP\tiempo.txt" >> $env:GITHUB_STEP_SUMMARY
+
+      - name: 2 y 3 · Prompts reales «Desinstala» y luego «Instala» (Mac, HOME temporal)
+        if: matrix.so == 'mac'
+        shell: bash
+        env:
+          OR_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          RESPUESTAS: ${{ inputs.respuestas }}
+          MODELO: ${{ inputs.modelo }}
+        run: |
+          export HOME="$HOME_PRUEBA"
+          export PATH="$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          export ANTHROPIC_BASE_URL=https://openrouter.ai/api ANTHROPIC_AUTH_TOKEN="$OR_KEY" ANTHROPIC_API_KEY=
+          export ANTHROPIC_MODEL="$MODELO" ANTHROPIC_DEFAULT_SONNET_MODEL="$MODELO" ANTHROPIC_DEFAULT_HAIKU_MODEL=anthropic/claude-haiku-5.5
+          nota=""
+          if [ "$PRE" = true ]; then nota="
+
+          (Prueba previa a publicar: el guion vigente es el de la rama $RAMA; léelo literal con curl -fsSL https://raw.githubusercontent.com/arbrain-ai/arbrain/$RAMA/INSTALAR.md. Todo lo demás, igual.)"; fi
+          cd "$HOME"
+          t0=$(date +%s)
+          claude -p "Desinstala Arbrain siguiendo https://github.com/arbrain-ai/arbrain/blob/$RAMA/INSTALAR.md$nota" --dangerously-skip-permissions --output-format stream-json --verbose > "$RUNNER_TEMP/desinstalar.jsonl" || true
+          echo "Desinstalar (Mac): $(( $(date +%s) - t0 )) s" | tee "$RUNNER_TEMP/tiempo.txt"
+          if [ -e "$HOME/Arbrain" ]; then echo "~/Arbrain sigue ahí después de desinstalar"; exit 1; fi
+          ls "$HOME/Arbrain-respaldos" | tee -a "$RUNNER_TEMP/tiempo.txt"
+          if [ -e /Applications/Arbrain.app ] || [ -e "$HOME/Applications/Arbrain.app" ]; then echo "la app sigue instalada"; exit 1; fi
+          t0=$(date +%s)
+          claude -p "Instala Arbrain siguiendo https://github.com/arbrain-ai/arbrain/blob/$RAMA/INSTALAR.md$nota
+
+          $RESPUESTAS" --dangerously-skip-permissions --output-format stream-json --verbose > "$RUNNER_TEMP/instalar.jsonl" || true
+          echo "Instalar desde cero (Mac): $(( $(date +%s) - t0 )) s" | tee -a "$RUNNER_TEMP/tiempo.txt"
+          cat "$RUNNER_TEMP/tiempo.txt" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Comprobar la versión nueva, la app y a Levy
+        if: always()
+        shell: bash
+        env:
+          OR_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          export HOME="$HOME_PRUEBA"
+          [ "$RUNNER_OS" != macOS ] || export PATH="$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+          . ~/.arbrain/entorno.sh 2>/dev/null || true
+          for f in desinstalar instalar; do
+            node -e "const j=require('fs').readFileSync(process.env.RUNNER_TEMP+'/$f.jsonl','utf8').trim().split('\n').map(l=>{try{return JSON.parse(l)}catch{return null}}).filter(Boolean);const r=j.filter(x=>x.type==='result').pop();console.log('RESULTADO $f:',r&&r.result&&r.result.slice(-1200));console.log('turnos',r&&r.num_turns,'costo',r&&r.total_cost_usd)" | tee -a "$GITHUB_STEP_SUMMARY" || true
+          done
+          cd ~/Arbrain/arbrain && node scripts/servidor.mjs estado | tee -a "$RUNNER_TEMP/tiempo.txt"
+          node scripts/servidor.mjs estado | grep -q Corriendo
+          echo "VERSION instalada: $(cat ../VERSION)" | tee -a "$GITHUB_STEP_SUMMARY"
+          [ -z "$VERSION_PRE" ] || test "$(cat ../VERSION)" = "$VERSION_PRE"
+          node scripts/escritorio.mjs estado | tee -a "$RUNNER_TEMP/tiempo.txt" || true
+          if [ "$RUNNER_OS" = Windows ]; then L="$APPDATA/ai.arbrain.servidor"; else L="$HOME/Library/Application Support/ai.arbrain.servidor"; fi
+          grep -o '"version": "[^"]*"' "$L/daemon/config/servidor.json" | tee -a "$GITHUB_STEP_SUMMARY"
+          grep -h "no hace falta compilar\|Compilo aquí\|Compilando\|Arbrain anterior" "$L/logs/servidor.log" | tee -a "$RUNNER_TEMP/tiempo.txt" || true
+          node "$GITHUB_WORKSPACE/e2e/levy-responde.mjs" | tee -a "$RUNNER_TEMP/tiempo.txt" "$GITHUB_STEP_SUMMARY"
+          exit "${PIPESTATUS[0]}"
+
+      - name: Captura de pantalla
+        if: always()
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then screencapture -x "$RUNNER_TEMP/pantalla.png" || true
+          else powershell -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms,System.Drawing; \$b=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds; \$i=New-Object System.Drawing.Bitmap \$b.Width,\$b.Height; [System.Drawing.Graphics]::FromImage(\$i).CopyFromScreen(\$b.Location,[System.Drawing.Point]::Empty,\$b.Size); \$i.Save('$RUNNER_TEMP\pantalla.png')" || true; fi
+
+      - name: Evidencia
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: reinstalar-${{ matrix.so }}
+          path: |
+            ${{ runner.temp }}/desinstalar.jsonl
+            ${{ runner.temp }}/instalar.jsonl
+            ${{ runner.temp }}/tiempo.txt
+            ${{ runner.temp }}/pantalla.png
+          retention-days: 14
