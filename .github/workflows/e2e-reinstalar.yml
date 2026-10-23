@@ -224,21 +224,29 @@ jobs:
         if: always()
         shell: bash
         run: |
+          set +e
           export HOME="$HOME_PRUEBA"
           cd ~/Arbrain && export CLAUDE_PROJECT_DIR="$PWD"
+          NODE_DIR="$(dirname "$(. ~/.arbrain/entorno.sh; command -v node)")"
           if [ "$RUNNER_OS" = Windows ]; then
-            export PATH="/c/Windows/system32:/c/Windows:/c/Program Files/Git/usr/bin:/c/Program Files/Git/cmd:$(cygpath -u "$LOCALAPPDATA")/Microsoft/WindowsApps:$HOME/.local/bin"
+            WA="$(cygpath -u "$LOCALAPPDATA")/Microsoft/WindowsApps"
+            export PATH="/c/Windows/system32:/c/Windows:/usr/bin:/c/Program Files/Git/cmd:$WA:$HOME/.local/bin"
           else
             export PATH="$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
           fi
-          echo "python3 en ese PATH: $(command -v python3 || echo ninguno) → $(python3 -c 'print("corre")' 2>&1 | head -1)" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "python3 en ese PATH: $(command -v python3 || echo ninguno) → $(python3 -c 'import sys; print(sys.version.split()[0])' 2>&1 | head -1)" | tee -a "$GITHUB_STEP_SUMMARY"
           grep -o '"command": "[^"]*"' .claude/settings.json | sort -u | tee -a "$GITHUB_STEP_SUMMARY"
           fallas=0
-          echo '{"prompt":"quiero instalar la app de arbrain","session_id":"e2e","hook_event_name":"UserPromptSubmit","cwd":"'"$PWD"'"}' | sh .claude/hooks/py.sh memory-recall > "$RUNNER_TEMP/recall.json"; rc=$?
-          node -e 'const j=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const c=j.hookSpecificOutput&&j.hookSpecificOutput.additionalContext||"";if(!c)process.exit(1);console.log("OK memory-recall:",c.slice(0,160).replace(/\s+/g," "))' "$RUNNER_TEMP/recall.json" | tee -a "$GITHUB_STEP_SUMMARY" || { echo "FALLA memory-recall (rc=$rc): $(head -c 300 "$RUNNER_TEMP/recall.json")" | tee -a "$GITHUB_STEP_SUMMARY"; fallas=1; }
-          grep -q 'RUTAS POR INTENCI' "$RUNNER_TEMP/recall.json" || grep -q 'INTENCI\\u00d3N' "$RUNNER_TEMP/recall.json" || echo "AVISO: el acento no llegó como se esperaba"
-          echo '{"tool_name":"Bash","tool_input":{"command":"ls"},"hook_event_name":"PreToolUse","cwd":"'"$PWD"'"}' | sh .claude/hooks/py.sh candado-freno; rc=$?
-          [ "$rc" = 0 ] && echo "OK candado-freno deja pasar ls" | tee -a "$GITHUB_STEP_SUMMARY" || { echo "FALLA candado-freno rc=$rc" | tee -a "$GITHUB_STEP_SUMMARY"; fallas=1; }
+          echo '{"prompt":"quiero instalar la app de arbrain","session_id":"e2e","hook_event_name":"UserPromptSubmit","cwd":"'"$PWD"'"}' | sh .claude/hooks/py.sh memory-recall > "$RUNNER_TEMP/recall.json" 2> "$RUNNER_TEMP/recall.err"
+          if grep -q '"additionalContext"' "$RUNNER_TEMP/recall.json" && grep -q 'RUTAS POR INTENCI' "$RUNNER_TEMP/recall.json"; then
+            echo "OK memory-recall: $(head -c 140 "$RUNNER_TEMP/recall.json")" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "FALLA memory-recall: $(head -c 300 "$RUNNER_TEMP/recall.json") $(tail -3 "$RUNNER_TEMP/recall.err")" | tee -a "$GITHUB_STEP_SUMMARY"; fallas=1
+          fi
+          echo '{"tool_name":"Bash","tool_input":{"command":"ls"},"hook_event_name":"PreToolUse","cwd":"'"$PWD"'"}' | sh .claude/hooks/py.sh candado-freno > "$RUNNER_TEMP/freno1.json" 2>&1; rc=$?
+          if [ "$rc" = 0 ] && ! grep -q deny "$RUNNER_TEMP/freno1.json"; then echo "OK candado-freno deja pasar ls" | tee -a "$GITHUB_STEP_SUMMARY"; else echo "FALLA candado-freno con ls (rc=$rc): $(head -c 300 "$RUNNER_TEMP/freno1.json")" | tee -a "$GITHUB_STEP_SUMMARY"; fallas=1; fi
+          echo '{"tool_name":"Bash","tool_input":{"command":"gog gmail send --to x@ejemplo.com --subject hola"},"hook_event_name":"PreToolUse","cwd":"'"$PWD"'"}' | sh .claude/hooks/py.sh candado-freno > "$RUNNER_TEMP/freno2.json" 2>&1
+          if grep -q '"deny"' "$RUNNER_TEMP/freno2.json"; then echo "OK candado-freno frena un envío de correo" | tee -a "$GITHUB_STEP_SUMMARY"; else echo "FALLA candado-freno no frenó el envío: $(head -c 300 "$RUNNER_TEMP/freno2.json")" | tee -a "$GITHUB_STEP_SUMMARY"; fallas=1; fi
           exit $fallas
 
       - name: Captura de pantalla
