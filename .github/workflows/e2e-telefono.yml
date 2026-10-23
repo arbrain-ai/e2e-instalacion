@@ -1,0 +1,141 @@
+# «Tu cerebro en el teléfono» (23 oct 2026, modo espejo N1): instala la copia generada de una rama NO publicada (release
+# de prueba «pre-…» de este repo, asset copia-*.tgz) en Mac, Windows y Linux y corre la prueba de punta a punta del
+# teléfono con un `tailscale` falso que anota sus argumentos (arbrain/scripts/servidor/prueba-telefono.mjs):
+# 421 apagado, encender con `serve` (nunca `funnel`), entrar con contraseña y con código de un solo uso (cookie Secure),
+# manifest «Tu Arbrain» y sw.js, página y API en 200, rechazo sin contraseña, en claro y de otro origen, apagar → 421.
+# Linux además: capturas de Ajustes y del iPhone, y un `tailscaled` REAL en modo userspace sin login (estado
+# «falta iniciar sesión» de verdad). No toca ninguna tailnet: el tailscaled real nunca inicia sesión.
+name: E2E teléfono · Mac, Windows y Linux
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'Release de prueba de este repo con la copia'
+        default: 'pre-telefono'
+        type: string
+      asset:
+        default: 'copia-telefono.tgz'
+        type: string
+permissions:
+  contents: read
+jobs:
+  telefono:
+    name: teléfono · ${{ matrix.so }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, so: linux }
+          - { os: macos-latest, so: mac }
+          - { os: windows-latest, so: windows }
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE: ${{ inputs.release }}
+      ASSET: ${{ inputs.asset }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          path: e2e
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+
+      - name: Instalar la copia generada en ~/Arbrain (como la deja INSTALAR, rama mi-arbrain)
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release download "$RELEASE" -R "$GITHUB_REPOSITORY" -p "$ASSET" -D "$RUNNER_TEMP"
+          mkdir -p "$HOME/Arbrain" && { tar -xzf "$RUNNER_TEMP/$ASSET" -C "$HOME/Arbrain" || echo "AVISO: tar avisó algo (en Windows, los enlaces simbólicos)"; }
+          cd "$HOME/Arbrain"
+          git init -q -b mi-arbrain && git -c user.name="Mi Arbrain" -c user.email=yo@mi-arbrain.local add -A >/dev/null
+          git -c user.name="Mi Arbrain" -c user.email=yo@mi-arbrain.local commit -qm "Copia de prueba" && echo "VERSION $(cat VERSION) · $(git ls-files | wc -l) archivos" | tee -a "$GITHUB_STEP_SUMMARY"
+          test -f TELEFONO.md && test -f arbrain/scripts/servidor/telefono.mjs && grep -q 'TELEFONO.md' CLAUDE.md
+          echo "DATOS=$RUNNER_TEMP/datos" >> "$GITHUB_ENV"
+
+      - name: Prueba de punta a punta del teléfono (tailscale falso; compila la web y el daemon de la copia)
+        shell: bash
+        run: |
+          set -o pipefail
+          cd "$HOME/Arbrain"
+          node arbrain/scripts/servidor/prueba-telefono.mjs --compilar --mantener --datos "$DATOS" 2>&1 | tee "$RUNNER_TEMP/prueba-telefono.log"
+          grep '^OK \|PRUEBA_TELEFONO_OK' "$RUNNER_TEMP/prueba-telefono.log" >> "$GITHUB_STEP_SUMMARY"
+          grep -q PRUEBA_TELEFONO_OK "$RUNNER_TEMP/prueba-telefono.log"
+
+      - name: Lo que recibió el tailscale falso (argumentos)
+        if: always()
+        shell: bash
+        run: |
+          echo '### tailscale falso' >> "$GITHUB_STEP_SUMMARY"
+          { echo '```'; cat "$DATOS/tailscale-falso/registro.jsonl" 2>/dev/null | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{for(const l of s.trim().split("\n")){try{console.log("tailscale "+JSON.parse(l).args.join(" "))}catch{}}})'; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
+          ! grep -q funnel "$DATOS/tailscale-falso/registro.jsonl"
+
+      - name: Capturas de Ajustes y del iPhone (Linux)
+        if: matrix.so == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PW_DIR="$RUNNER_TEMP/pw"; mkdir -p "$PW_DIR" "$RUNNER_TEMP/capturas"
+          npm i --prefix "$PW_DIR" --no-audit --no-fund --loglevel=error playwright@1.56.1
+          (cd "$PW_DIR" && npx playwright install --with-deps chromium >/dev/null)
+          node e2e/captura-telefono.mjs "$DATOS" "$RUNNER_TEMP/capturas" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Apagar el teléfono y detener (tailscale falso)
+        if: always()
+        shell: bash
+        run: |
+          cd "$HOME/Arbrain/arbrain"
+          export ARBRAIN_TAILSCALE="$PWD/scripts/servidor/tailscale-falso.mjs" ARBRAIN_TAILSCALE_FALSO_DIR="$DATOS/tailscale-falso"
+          node scripts/servidor.mjs telefono apagar --datos "$DATOS" | tail -1 | tee -a "$GITHUB_STEP_SUMMARY"
+          node scripts/servidor.mjs detener --datos "$DATOS"
+
+      - name: tailscaled REAL en modo userspace, sin iniciar sesión (Linux)
+        if: matrix.so == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          T="$RUNNER_TEMP/ts"; mkdir -p "$T/estado"
+          tb="$(curl -fsSL 'https://pkgs.tailscale.com/stable/?mode=json' | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).Tarballs.amd64))')"
+          curl -fsSL "https://pkgs.tailscale.com/stable/$tb" | tar -xz -C "$T" --strip-components=1
+          "$T/tailscaled" --tun=userspace-networking --socket="$T/ts.sock" --statedir="$T/estado" --port=0 > "$T/tailscaled.log" 2>&1 &
+          for i in $(seq 1 30); do "$T/tailscale" --socket="$T/ts.sock" status --json >/dev/null 2>&1 && break; sleep 1; done
+          echo "### tailscaled real ($tb, userspace, sin login)" >> "$GITHUB_STEP_SUMMARY"
+          "$T/tailscale" --socket="$T/ts.sock" status --json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);console.log("BackendState="+j.BackendState)})' | tee -a "$GITHUB_STEP_SUMMARY"
+          export ARBRAIN_TAILSCALE="$T/tailscale" ARBRAIN_TAILSCALE_SOCKET="$T/ts.sock"
+          cd "$HOME/Arbrain/arbrain"
+          nohup node scripts/servidor.mjs --sin-navegador --datos "$DATOS" > "$RUNNER_TEMP/arranque-real.log" 2>&1 &
+          for i in $(seq 1 60); do node scripts/servidor.mjs estado --datos "$DATOS" | head -1 | grep -q Corriendo && break; sleep 3; done
+          node scripts/servidor.mjs estado --datos "$DATOS" | head -1
+          E="$(node scripts/servidor.mjs telefono estado --datos "$DATOS")"; echo "$E"
+          echo "telefono estado → $(echo "$E" | tail -1)" >> "$GITHUB_STEP_SUMMARY"
+          echo "$E" | tail -1 | grep -q '^TELEFONO_FALTA_SESION'
+          N="$(node scripts/servidor.mjs telefono encender --datos "$DATOS")"; echo "$N"
+          ultima="$(echo "$N" | tail -1)"
+          echo "telefono encender → ${ultima%% *} $(echo "$ultima" | grep -o 'https://login.tailscale.com/[a-z]*/' || true)…" >> "$GITHUB_STEP_SUMMARY"
+          echo "$ultima" | grep -Eq '^TELEFONO_FALTA_(SESION|PERMISO)'
+          P="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1]+"/daemon/config/servidor.json","utf8")).puertoWeb)' "$DATOS")"
+          c="$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: maquina.ejemplo.ts.net' -H 'X-Forwarded-Proto: https' "http://127.0.0.1:$P/sin-sesion")"
+          echo "Host del teléfono sin sesión de Tailscale → $c" | tee -a "$GITHUB_STEP_SUMMARY"
+          test "$c" = 421
+          node -e 'const j=JSON.parse(require("fs").readFileSync(process.argv[1]+"/daemon/config/telefono.json","utf8"));if(j.encendido)process.exit(1)' "$DATOS"
+          "$T/tailscale" --socket="$T/ts.sock" serve status --json | tee "$RUNNER_TEMP/serve-real.json"
+          node scripts/servidor.mjs detener --datos "$DATOS"
+
+      - name: Evidencia
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: telefono-${{ matrix.so }}
+          path: |
+            ${{ runner.temp }}/prueba-telefono.log
+            ${{ runner.temp }}/capturas/
+            ${{ runner.temp }}/datos/logs/
+            ${{ runner.temp }}/datos/tailscale-falso/
+            ${{ runner.temp }}/datos/tailscale-llamadas.txt
+            ${{ runner.temp }}/arranque-real.log
+            ${{ runner.temp }}/serve-real.json
+            ${{ runner.temp }}/ts/tailscaled.log
+          retention-days: 14
