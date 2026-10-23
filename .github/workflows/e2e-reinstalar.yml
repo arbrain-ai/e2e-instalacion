@@ -234,7 +234,7 @@ jobs:
           echo "python3 en ese PATH: $(command -v python3 || echo ninguno) → $(python3 -c 'print("corre")' 2>&1 | head -1)" | tee -a "$GITHUB_STEP_SUMMARY"
           grep -o '"command": "[^"]*"' .claude/settings.json | sort -u | tee -a "$GITHUB_STEP_SUMMARY"
           fallas=0
-          echo '{"prompt":"buenos días, ¿qué sigo?","session_id":"e2e","hook_event_name":"UserPromptSubmit","cwd":"'"$PWD"'"}' | sh .claude/hooks/py.sh memory-recall > "$RUNNER_TEMP/recall.json"; rc=$?
+          echo '{"prompt":"quiero instalar la app de arbrain","session_id":"e2e","hook_event_name":"UserPromptSubmit","cwd":"'"$PWD"'"}' | sh .claude/hooks/py.sh memory-recall > "$RUNNER_TEMP/recall.json"; rc=$?
           node -e 'const j=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const c=j.hookSpecificOutput&&j.hookSpecificOutput.additionalContext||"";if(!c)process.exit(1);console.log("OK memory-recall:",c.slice(0,160).replace(/\s+/g," "))' "$RUNNER_TEMP/recall.json" | tee -a "$GITHUB_STEP_SUMMARY" || { echo "FALLA memory-recall (rc=$rc): $(head -c 300 "$RUNNER_TEMP/recall.json")" | tee -a "$GITHUB_STEP_SUMMARY"; fallas=1; }
           grep -q 'RUTAS POR INTENCI' "$RUNNER_TEMP/recall.json" || grep -q 'INTENCI\\u00d3N' "$RUNNER_TEMP/recall.json" || echo "AVISO: el acento no llegó como se esperaba"
           echo '{"tool_name":"Bash","tool_input":{"command":"ls"},"hook_event_name":"PreToolUse","cwd":"'"$PWD"'"}' | sh .claude/hooks/py.sh candado-freno; rc=$?
