@@ -65,8 +65,11 @@ jobs:
         run: |
           set -o pipefail
           cd "$HOME/Arbrain"
-          node arbrain/scripts/servidor/prueba-telefono.mjs --compilar --mantener --datos "$DATOS" 2>&1 | tee "$RUNNER_TEMP/prueba-telefono.log"
-          grep '^OK \|PRUEBA_TELEFONO_OK' "$RUNNER_TEMP/prueba-telefono.log" >> "$GITHUB_STEP_SUMMARY"
+          # A un archivo y no a `| tee`: con --mantener el supervisor sigue vivo y heredaría la tubería (tee no terminaría).
+          rc=0; node arbrain/scripts/servidor/prueba-telefono.mjs --compilar --mantener --datos "$DATOS" > "$RUNNER_TEMP/prueba-telefono.log" 2>&1 || rc=$?
+          grep -v '^\[prueba-telefono .*\] OK ' "$RUNNER_TEMP/prueba-telefono.log" | tail -400
+          grep '^OK \|PRUEBA_TELEFONO_OK' "$RUNNER_TEMP/prueba-telefono.log" >> "$GITHUB_STEP_SUMMARY" || true
+          test "$rc" = 0
           grep -q PRUEBA_TELEFONO_OK "$RUNNER_TEMP/prueba-telefono.log"
 
       - name: Lo que recibió el tailscale falso (argumentos)
