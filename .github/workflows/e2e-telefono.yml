@@ -1,5 +1,5 @@
 # «Tu cerebro en el teléfono» (23 oct 2026, modo espejo N1): instala la copia generada de una rama NO publicada (release
-# de prueba «pre-…» de este repo, asset copia-*.tgz) en Mac, Windows y Linux y corre la prueba de punta a punta del
+# de prueba «pre-…» de este repo, asset copia-*.bundle) en Mac, Windows y Linux y corre la prueba de punta a punta del
 # teléfono con un `tailscale` falso que anota sus argumentos (arbrain/scripts/servidor/prueba-telefono.mjs):
 # 421 apagado, encender con `serve` (nunca `funnel`), entrar con contraseña y con código de un solo uso (cookie Secure),
 # manifest «Tu Arbrain» y sw.js, página y API en 200, rechazo sin contraseña, en claro y de otro origen, apagar → 421.
@@ -14,7 +14,7 @@ on:
         default: 'pre-telefono'
         type: string
       asset:
-        default: 'copia-telefono.tgz'
+        default: 'copia-telefono.bundle'
         type: string
 permissions:
   contents: read
@@ -49,17 +49,14 @@ jobs:
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP" && gh release download "$RELEASE" -R "$GITHUB_REPOSITORY" -p "$ASSET" -D .
-          mkdir -p "$HOME/Arbrain"
-          # Ruta relativa: el tar de Git Bash toma «D:» como un servidor remoto.
-          tar -xzf "$ASSET" -C "$HOME/Arbrain" || echo "AVISO: tar avisó algo (en Windows, los enlaces simbólicos)"
+          # La copia viaja como git bundle: en Windows los enlaces quedan como los deja un `git clone` real.
+          git clone -q --origin dani "$ASSET" "$HOME/Arbrain"
           cd "$HOME/Arbrain"
+          git switch -q -c mi-arbrain
           test -f TELEFONO.md
           test -f arbrain/scripts/servidor/telefono.mjs
           test -f arbrain/scripts/servidor/prueba-telefono.mjs
           grep -q 'TELEFONO.md' CLAUDE.md
-          git init -q -b mi-arbrain
-          git add -A >/dev/null
-          git -c user.name="Mi Arbrain" -c user.email=yo@mi-arbrain.local commit -qm "Copia de prueba"
           echo "VERSION $(cat VERSION) · $(git ls-files | wc -l) archivos" | tee -a "$GITHUB_STEP_SUMMARY"
           echo "DATOS=$RUNNER_TEMP/datos" >> "$GITHUB_ENV"
 
