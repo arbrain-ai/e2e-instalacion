@@ -1,0 +1,76 @@
+# Tu cerebro en la nube (23 oct 2026, modo espejo N3): la rama servidor de INSTALAR.md en un Ubuntu REAL con systemd.
+# El runner hace de VPS recién rentado: root con la llave de «su laptop», sin Arbrain. Se instala la copia del alumno
+# de una rama sin publicar, servida desde un espejo local con su etiqueta firmada por una llave desechable que se AGREGA
+# al ancla (como e2e-reinstalar.yml con prepublicacion). La copia llega como bundle de git en un release de prueba de
+# ESTE repo («pre-nube-…»); en arbrain-ai/arbrain no se publica nada. Sin modelo: los comandos literales del PASO 3 de
+# INSTALAR.md y luego arbrain/scripts/instalar/nube-prueba.sh, que comprueba todo por comando (ver su encabezado).
+name: E2E nube · servidor Linux (ubuntu-latest)
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'Release de prueba de este repo con arbrain-nube.bundle'
+        default: 'pre-nube-0.2.9'
+        type: string
+      huellas:
+        description: 'ninguna = compila el programa en el servidor; publicadas = usa las huellas de la versión publicada'
+        default: 'ninguna'
+        type: choice
+        options: [ninguna, publicadas]
+permissions:
+  contents: read
+jobs:
+  nube:
+    name: nube · ubuntu-latest
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    steps:
+      - name: Copia del alumno (bundle del release de prueba)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REL: ${{ inputs.release }}
+        run: |
+          set -euo pipefail
+          gh release download "$REL" -R "$GITHUB_REPOSITORY" -p arbrain-nube.bundle -D "$RUNNER_TEMP"
+          git clone -q "$RUNNER_TEMP/arbrain-nube.bundle" "$RUNNER_TEMP/copia"
+          echo "Copia: $(git -C "$RUNNER_TEMP/copia" log -1 --format='%h %s') · VERSION $(cat "$RUNNER_TEMP/copia/VERSION")" | tee -a "$GITHUB_STEP_SUMMARY"
+          uname -a | tee -a "$GITHUB_STEP_SUMMARY"; ps -p 1 -o comm= | sed 's/^/PID 1: /' | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Pruebas del script y shellcheck
+        working-directory: ${{ runner.temp }}/copia
+        run: |
+          set -euo pipefail
+          bash arbrain/scripts/instalar/nube.test.sh | tee -a "$GITHUB_STEP_SUMMARY"
+          shellcheck --version | head -2
+          shellcheck -S warning -x arbrain/scripts/instalar/nube.sh arbrain/scripts/instalar/nube-prueba.sh arbrain/scripts/instalar/nube.test.sh
+          echo "shellcheck -S warning: limpio" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Rama servidor de punta a punta (como root, máquina desechable)
+        env:
+          HUELLAS: ${{ inputs.huellas }}
+        run: |
+          set -o pipefail
+          sudo NUBE_PRUEBA_PLAZO_MIN=45 bash "$RUNNER_TEMP/copia/arbrain/scripts/instalar/nube-prueba.sh" --copia "$RUNNER_TEMP/arbrain-nube.bundle" --huellas "$HUELLAS" 2>&1 | tee "$RUNNER_TEMP/nube.txt"
+          r=${PIPESTATUS[0]}
+          grep -E '^(OK|FAIL|NUBE_|·)' "$RUNNER_TEMP/nube.txt" >> "$GITHUB_STEP_SUMMARY" || true
+          exit "$r"
+
+      - name: Evidencia
+        if: always()
+        run: |
+          sudo cp /srv/nube-prueba/evidencia.txt /srv/nube-prueba/nube-*.log "$RUNNER_TEMP/" 2>/dev/null || true
+          sudo journalctl -u arbrain --no-pager -n 200 > "$RUNNER_TEMP/journal-arbrain.txt" 2>&1 || true
+          sudo sh -c 'tail -n 200 /home/arbrain/.local/share/ai.arbrain.servidor/logs/*.log' > "$RUNNER_TEMP/logs-arbrain.txt" 2>&1 || true
+          sudo chmod a+r "$RUNNER_TEMP"/*.txt "$RUNNER_TEMP"/*.log 2>/dev/null || true
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: nube-ubuntu
+          path: |
+            ${{ runner.temp }}/nube.txt
+            ${{ runner.temp }}/evidencia.txt
+            ${{ runner.temp }}/nube-*.log
+            ${{ runner.temp }}/journal-arbrain.txt
+            ${{ runner.temp }}/logs-arbrain.txt
+          retention-days: 14
