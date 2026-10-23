@@ -6,7 +6,7 @@
 //   3. telefono-chat.png           Tu Arbrain en el iPhone ya con sesión.
 // Nunca imprime la contraseña. Playwright viene de PW_DIR (npm i playwright en una carpeta aparte).
 import { createRequire } from 'node:module'
-import { readFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createHmac } from 'node:crypto'
 import http from 'node:http'
@@ -18,6 +18,12 @@ const { puerto, host } = JSON.parse(readFileSync(join(datos, 'prueba-telefono.js
 const acceso = JSON.parse(readFileSync(join(datos, 'daemon', 'config', 'acceso.json'), 'utf8'))
 const g = Number.isSafeInteger(Number(acceso.generacion)) ? Number(acceso.generacion) : 0
 const valor = `s1.${createHmac('sha256', acceso.contrasena).update(`arbrain-sesion-servidor:${g}`).digest('hex')}`
+
+// Primer arranque ya hecho (como una persona que ya instaló): si no, toda página lleva a /bienvenida.
+const legales = readFileSync(join(process.env.COPIA, 'arbrain', 'src', 'features', 'primer-arranque', 'textos', 'legales.ts'), 'utf8')
+const versionTextos = /VERSION_TEXTOS = '([^']+)'/.exec(legales)[1]
+const ahora = new Date().toISOString()
+writeFileSync(join(datos, 'web', 'primer-arranque.json'), JSON.stringify({ version: 1, aceptado: { version: versionTextos, fecha: ahora }, nombre: 'Ana', completado: ahora, sesionBienvenida: null }))
 
 // Proxy «tailscale serve» de mentira: conserva el Host del teléfono y avisa que el navegador habló HTTPS.
 const proxy = http.createServer((req, res) => {
