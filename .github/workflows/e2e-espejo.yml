@@ -1,0 +1,90 @@
+# Modo espejo de punta a punta (23 oct 2026, nodo N4 «prototipo», gate g-lider): una laptop y una nube Linux, cada una
+# un contenedor Ubuntu 24.04 con systemd en este runner, contra un «GitHub» local (mi-arbrain en un volumen compartido).
+# La nube se instala con `nube.sh --espejo --rol lider --cita …` (servicio systemd real); la laptop con INSTALAR PASO 3 y
+# 4. La rutina «brief de la mañana» la corre el scheduler REAL del daemon con el CLI de Claude real contra un OpenRouter
+# FALSO dentro de cada máquina (openrouter.ai → 127.0.0.1): cero crédito, ninguna llave real. Reloj acelerado con
+# libfaketime. Todo lo comprueba prueba.sh (docs/builds/modo-espejo-2026-10-23/prototipo/ del repo de Arbrain, que llega
+# como espejo-prototipo.tar.gz en el mismo release; ver su encabezado).
+#
+# La copia del alumno llega como bundle de git en un release de prueba de ESTE repo («pre-espejo-…»); el programa ya
+# compilado se arma aquí mismo desde esa copia (`servidor.mjs empaquetar`) y su huella va en una etiqueta firmada con
+# una llave desechable. En arbrain-ai/arbrain no se publica nada.
+name: E2E espejo · laptop + nube Linux (prototipo)
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'Release de prueba de este repo con arbrain-espejo.bundle'
+        default: 'pre-espejo-0.2.10'
+        type: string
+permissions:
+  contents: read
+jobs:
+  espejo:
+    name: espejo · ${{ matrix.plat }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, plat: linux-x64 }
+          - { os: ubuntu-24.04-arm, plat: linux-arm64 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    steps:
+      - name: Copia del alumno (bundle del release de prueba)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REL: ${{ inputs.release }}
+        run: |
+          set -euo pipefail
+          gh release download "$REL" -R "$GITHUB_REPOSITORY" -p arbrain-espejo.bundle -p espejo-prototipo.tar.gz -D "$RUNNER_TEMP"
+          mkdir -p "$RUNNER_TEMP/prototipo" && tar -xzf "$RUNNER_TEMP/espejo-prototipo.tar.gz" -C "$RUNNER_TEMP/prototipo"
+          git clone -q "$RUNNER_TEMP/arbrain-espejo.bundle" "$RUNNER_TEMP/copia"
+          echo "Copia: $(git -C "$RUNNER_TEMP/copia" log -1 --format='%h %s') · VERSION $(cat "$RUNNER_TEMP/copia/VERSION") · $(uname -m)" | tee -a "$GITHUB_STEP_SUMMARY"
+          docker version -f 'docker {{.Server.Version}} · cgroup {{.Server.Os}}' | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+
+      - name: Pruebas del motor y del instalador
+        working-directory: ${{ runner.temp }}/copia
+        run: |
+          set -euo pipefail
+          git config --global user.name prueba; git config --global user.email prueba@ci
+          node --test arbrain/scripts/espejo/pruebas/*.test.mjs 2>&1 | grep -E '^# (pass|fail)' | tee -a "$GITHUB_STEP_SUMMARY"
+          bash arbrain/scripts/espejo/prueba-dos-maquinas.sh | tail -1 | tee -a "$GITHUB_STEP_SUMMARY"
+          bash arbrain/scripts/instalar/nube.test.sh | tail -1 | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Programa ya compilado de esta copia (servidor.mjs empaquetar)
+        working-directory: ${{ runner.temp }}/copia
+        run: |
+          set -euo pipefail
+          node arbrain/scripts/servidor.mjs empaquetar --salida "$RUNNER_TEMP/programa" --datos "$RUNNER_TEMP/datos-empaquetar" 2>&1 | tail -5
+          ls -la "$RUNNER_TEMP/programa" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Laptop + nube de punta a punta (los seis puntos)
+        run: |
+          set -o pipefail
+          P="$(ls "$RUNNER_TEMP"/programa/arbrain-programa-*-${{ matrix.plat }}.tar.gz)"
+          ESPEJO_CPUS=2 ESPEJO_MEM=4g bash "$RUNNER_TEMP/prototipo/prueba.sh" \
+            --copia "$RUNNER_TEMP/arbrain-espejo.bundle" --programa "$P" --salida "$RUNNER_TEMP/evidencia" 2>&1 | tee "$RUNNER_TEMP/espejo.txt"
+          r=${PIPESTATUS[0]}
+          grep -E '^(OK|FAIL|ESPEJO_|·|──)' "$RUNNER_TEMP/espejo.txt" >> "$GITHUB_STEP_SUMMARY" || true
+          exit "$r"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: espejo-${{ matrix.plat }}
+          path: |
+            ${{ runner.temp }}/espejo.txt
+            ${{ runner.temp }}/evidencia
+          retention-days: 14
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: programa-${{ matrix.plat }}
+          path: ${{ runner.temp }}/programa/*.tar.gz*
+          retention-days: 3
