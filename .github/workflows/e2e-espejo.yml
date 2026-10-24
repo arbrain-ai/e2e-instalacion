@@ -9,13 +9,15 @@
 # La copia del alumno llega como bundle de git en un release de prueba de ESTE repo («pre-espejo-…»); el programa ya
 # compilado se arma aquí mismo desde esa copia (`servidor.mjs empaquetar`) y su huella va en una etiqueta firmada con
 # una llave desechable. En arbrain-ai/arbrain no se publica nada.
+# v0.2.11 (24 oct 2026): el brief también reescribe .claude/now.md (la guardia ya deja a una rutina escribir lo que el
+# cerebro genera) y una rutina que pide un clic que nadie da va delante en la fila sin detener al brief.
 name: E2E espejo · laptop + nube Linux (prototipo)
 on:
   workflow_dispatch:
     inputs:
       release:
         description: 'Release de prueba de este repo con arbrain-espejo.bundle'
-        default: 'pre-espejo-0.2.10'
+        default: 'pre-espejo-0211'
         type: string
 permissions:
   contents: read
