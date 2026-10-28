@@ -58,7 +58,7 @@ jobs:
           CLAUDE_PROJECT_DIR: ${{ github.workspace }}
           ESPERA: ${{ matrix.espera }}
         run: |
-          set -uo pipefail
+          set +e -uo pipefail  # sin -e: el control tiene que llegar hasta la verificación
           raiz=$(pwd -W 2>/dev/null || pwd)
           t="$RUNNER_TEMP/sesion.jsonl"
           python - "$t" <<'PY'
