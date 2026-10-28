@@ -1,0 +1,116 @@
+# Ganchos del cerebro en Windows sobre lo PUBLICADO (27 oct 2026). Un fundador en Windows con v0.2.9 no guardaba
+# conversaciones: capture-conversation.py importaba fcntl (no existe en Windows) y, detrás, ZoneInfo pedía tzdata.
+# Clona arbrain-ai/arbrain en la etiqueta pedida y corre el gancho como Claude Code en Windows: `sh .claude/hooks/py.sh`
+# en Git Bash con un Python de python.org (sin fcntl ni tzdata). v0.2.9 es el control: tiene que fallar.
+# Fuente del mismo chequeo para la copia: arbrain/empaquetado/ci/workflows/ganchos-windows.yml (repo del autor).
+name: E2E ganchos · Windows
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Etiqueta de arbrain-ai/arbrain que debe pasar'
+        default: 'v0.2.12'
+        type: string
+      control:
+        description: 'Etiqueta que debe fallar (versión con el defecto)'
+        default: 'v0.2.9'
+        type: string
+permissions:
+  contents: read
+jobs:
+  captura:
+    name: captura · ${{ matrix.ref }} (espera ${{ matrix.espera }})
+    runs-on: windows-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { ref: '${{ inputs.version }}', espera: pasa }
+          - { ref: '${{ inputs.control }}', espera: falla }
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: arbrain-ai/arbrain
+          ref: ${{ matrix.ref }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+
+      - name: Terreno de un alumno en Windows
+        shell: bash
+        run: |
+          echo "VERSION $(cat VERSION) · EDICION $(grep -v '^#' arbrain/EDICION | sed '/^\s*$/d')" | tee -a "$GITHUB_STEP_SUMMARY"
+          python - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import importlib.util, sys
+          from zoneinfo import ZoneInfo
+          assert importlib.util.find_spec('fcntl') is None, 'este runner trae fcntl: la prueba no serviría'
+          try: ZoneInfo('America/Mexico_City'); z = 'hay base de zonas'
+          except Exception as e: z = 'sin base de zonas (' + type(e).__name__ + ')'
+          print(f'python {sys.version.split()[0]} · sin fcntl · {z}')
+          PY
+
+      - name: Punta a punta por py.sh (como Claude Code en Windows)
+        shell: bash
+        env:
+          CLAUDE_PROJECT_DIR: ${{ github.workspace }}
+          ESPERA: ${{ matrix.espera }}
+        run: |
+          set -uo pipefail
+          raiz=$(pwd -W 2>/dev/null || pwd)
+          t="$RUNNER_TEMP/sesion.jsonl"
+          python - "$t" <<'PY'
+          import json, sys
+          lineas = [
+            {'type': 'user', 'uuid': 'u1', 'timestamp': '2026-10-27T10:00:00Z',
+             'message': {'role': 'user', 'content': [{'type': 'text', 'text': '¿Qué hago hoy? Revisión de cotización, señal ñandú'}]}},
+            {'type': 'assistant', 'uuid': 'a1', 'timestamp': '2026-10-27T10:00:05Z',
+             'message': {'role': 'assistant', 'content': [{'type': 'text', 'text': 'Hoy: llamar a tu cliente, año fiscal y acentos áéíóú'}]}},
+          ]
+          with open(sys.argv[1], 'w', encoding='utf-8', newline='\n') as f:
+              for l in lineas: f.write(json.dumps(l, ensure_ascii=False) + '\n')
+          PY
+          j() { python -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$1"; }
+          entrada() { printf '{"session_id":"%s","transcript_path":%s,"cwd":%s}' "$1" "$(j "$(cygpath -w "$t")")" "$(j "$raiz")"; }
+          {
+            echo '--- 1. captura normal (PreCompact / SessionEnd)'
+            entrada sesion-ci | sh .claude/hooks/py.sh capture-conversation --runtime claude
+            echo '--- 2. cuatro capturas a la vez sobre la misma sesión'
+            for i in 1 2 3 4; do entrada sesion-ci | sh .claude/hooks/py.sh capture-conversation --runtime claude & done; wait
+            echo '--- 3. chat de la app (CLAUDECLAW_DAEMON) en la edición cliente'
+            entrada sesion-app | CLAUDECLAW_DAEMON=1 sh .claude/hooks/py.sh capture-conversation --runtime claude
+            echo '--- 4. rutina (CLAUDECLAW_SOURCE=cron): no se guarda'
+            entrada sesion-cron | CLAUDECLAW_DAEMON=1 CLAUDECLAW_SOURCE=cron sh .claude/hooks/py.sh capture-conversation --runtime claude
+          } 2>&1 | tee "$RUNNER_TEMP/ganchos.log"
+          python - <<'PY' 2>&1 | tee -a "$RUNNER_TEMP/ganchos.log"
+          import glob, hashlib, json, sys
+          def sid(s): return hashlib.sha256(s.encode()).hexdigest()[:20]
+          fallas = []
+          for sesion, esperado in [('sesion-ci', 1), ('sesion-app', 1), ('sesion-cron', 0)]:
+              diarios = glob.glob(f'.claude/daily/*.claude-{sid(sesion)}.md')
+              print(sesion, '->', diarios)
+              if len(diarios) != esperado: fallas.append(f'{sesion}: {len(diarios)} diarios, se esperaba {esperado}'); continue
+              if not esperado: continue
+              texto = open(diarios[0], encoding='utf-8').read()
+              if not ('señal ñandú' in texto and 'áéíóú' in texto): fallas.append(f'{sesion}: acentos rotos')
+              if texto.count('### ') != 2: fallas.append(f'{sesion}: {texto.count("### ")} mensajes, se esperaban 2')
+              reg = glob.glob(f'arbrain/server/store/conversation-capture/*.claude.{sid(sesion)}.json')
+              if len(reg) != 1 or len(json.load(open(reg[0], encoding='utf-8'))['messages']) != 2: fallas.append(f'{sesion}: registro {reg}')
+          print('FALLAS:', fallas) if fallas else print('GANCHOS_WINDOWS_OK (captura, concurrencia, chat de la app, rutina fuera, UTF-8)')
+          sys.exit(1 if fallas else 0)
+          PY
+          rc=$?
+          grep -E 'GANCHOS_WINDOWS_OK|FALLAS|fcntl|ModuleNotFoundError|ZoneInfo' "$RUNNER_TEMP/ganchos.log" | head -8 | sed 's/^/    /' >> "$GITHUB_STEP_SUMMARY"
+          if [ "$ESPERA" = pasa ]; then test $rc = 0; else echo "control: rc=$rc (debe ser distinto de 0)" | tee -a "$GITHUB_STEP_SUMMARY"; test $rc != 0; fi
+
+      - name: Evidencia
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ganchos-windows-${{ matrix.ref }}
+          path: |
+            ${{ runner.temp }}/ganchos.log
+            .claude/daily/
+          retention-days: 14
