@@ -1,0 +1,159 @@
+# Bienvenida en bucle en Windows (29 oct 2026, un fundador: Windows 11, Node 24.14, v0.2.10). Con la bienvenida ya
+# completada, el servidor encendido por la app de escritorio, el arranque automático (VBS) o PowerShell responde
+# /api/primer-arranque con falta:true y nombre:null; desde Git Bash con `. ~/.arbrain/entorno.sh` funciona.
+# Etapas (cada una deja «ETAPA … BIEN|MAL» en el resumen; bienvenida-diag.mjs):
+#   A · Git Bash con entorno.sh (como INSTALAR): arranca, completa la bienvenida por la API real y la lee.
+#   B · PowerShell oculto con el entorno de una sesión de Windows (sin HOME de Git Bash, PATH del registro, cwd System32).
+#   C · El arranque automático real: `arranque-automatico activar` y wscript sobre el «Arbrain Servidor.vbs» de Inicio.
+#   D · La app de escritorio (Arbrain.exe) enciende el servidor (servidor.rs › arrancar).
+# Fuente: una etiqueta publicada de arbrain-ai/arbrain (por defecto la del fundador) o una copia de prueba (bundle de un
+# release «pre-…» de este repo) para comprobar el arreglo antes de publicar.
+name: E2E bienvenida · Windows
+on:
+  workflow_dispatch:
+    inputs:
+      etiqueta:
+        description: 'Etiqueta publicada de arbrain-ai/arbrain (si no hay bundle)'
+        default: 'v0.2.10'
+        type: string
+      release:
+        description: 'Release de prueba de este repo con la copia (vacío = usar la etiqueta)'
+        default: ''
+        type: string
+      asset:
+        default: 'copia-bienvenida.bundle'
+        type: string
+      node:
+        default: '24.14'
+        type: string
+permissions:
+  contents: read
+jobs:
+  bienvenida:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ETIQUETA: ${{ inputs.etiqueta }}
+      RELEASE: ${{ inputs.release }}
+      ASSET: ${{ inputs.asset }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          path: e2e
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ inputs.node }}
+
+      - name: Copia en ~/Arbrain (rama mi-arbrain, ancla de firmas como INSTALAR)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "$RELEASE" ]; then
+            cd "$RUNNER_TEMP" && gh release download "$RELEASE" -R "$GITHUB_REPOSITORY" -p "$ASSET" -D .
+            git clone -q --origin dani "$ASSET" "$HOME/Arbrain"
+          else
+            git clone -q --origin dani --branch "$ETIQUETA" https://github.com/arbrain-ai/arbrain.git "$HOME/Arbrain"
+          fi
+          cd "$HOME/Arbrain"
+          mkdir -p ~/.config/arbrain
+          sed -n '/^arbrain-publicacion /p;/^arbrain-reserva /p' INSTALAR.md > ~/.config/arbrain/firmas-permitidas
+          git switch -q -c mi-arbrain
+          git config --local user.name "Mi Arbrain"; git config --local user.email yo@mi-arbrain.local
+          bash arbrain/scripts/instalar/requisitos.sh | tail -1 || true
+          echo "Node del sistema: $(node -v) en $(command -v node) · VERSION $(cat VERSION)" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "NODE_EXE=$(cygpath -w "$(command -v node)")" >> "$GITHUB_ENV"
+          echo "DATOS_W=$APPDATA\\ai.arbrain.servidor" >> "$GITHUB_ENV"
+
+      - name: A · Git Bash con entorno.sh (completa la bienvenida)
+        shell: bash
+        run: |
+          set -uo pipefail
+          . ~/.arbrain/entorno.sh
+          cd ~/Arbrain/arbrain
+          t0=$(date +%s)
+          nohup node scripts/servidor.mjs --sin-navegador > "$RUNNER_TEMP/arranque-A.log" 2>&1 &
+          for i in $(seq 1 180); do node scripts/servidor.mjs estado | head -1 | grep -q Corriendo && break; sleep 5; done
+          echo "A · listo en $(( $(date +%s) - t0 )) s" | tee -a "$RUNNER_TEMP/resultados.txt"
+          node "$GITHUB_WORKSPACE/e2e/bienvenida-diag.mjs" A --completar || true
+          node scripts/servidor.mjs detener
+
+      - name: B · PowerShell oculto con el entorno de una sesión de Windows
+        shell: pwsh
+        run: |
+          $u = [Environment]::GetEnvironmentVariable('Path','User'); $m = [Environment]::GetEnvironmentVariable('Path','Machine')
+          $nodeDir = Split-Path $env:NODE_EXE
+          $env:Path = "$nodeDir;$m;$u"
+          Remove-Item Env:HOME -ErrorAction SilentlyContinue
+          Get-ChildItem Env: | Where-Object { $_.Name -match '^(MSYS|MSYSTEM|SHELL|TERM|SHLVL|OLDPWD|PWD|EXEPATH|MINGW|ORIGINAL_)' } | ForEach-Object { Remove-Item "Env:$($_.Name)" }
+          $t0 = Get-Date
+          $script = "$env:USERPROFILE\Arbrain\arbrain\scripts\servidor.mjs"
+          Start-Process -FilePath $env:NODE_EXE -ArgumentList @($script, '--sin-navegador') -WorkingDirectory 'C:\Windows\System32' -WindowStyle Hidden -RedirectStandardOutput "$env:RUNNER_TEMP\arranque-B.log" -RedirectStandardError "$env:RUNNER_TEMP\arranque-B.err"
+          for ($i = 0; $i -lt 120; $i++) { if ((& $env:NODE_EXE $script estado | Select-Object -First 1) -match 'Corriendo') { break }; Start-Sleep 5 }
+          "B · listo en $([int]((Get-Date) - $t0).TotalSeconds) s" | Tee-Object -Append -FilePath "$env:RUNNER_TEMP\resultados.txt"
+          & $env:NODE_EXE "$env:GITHUB_WORKSPACE\e2e\bienvenida-diag.mjs" B
+          & $env:NODE_EXE $script detener
+          exit 0
+
+      - name: C · Arranque automático real (VBS de Inicio por wscript)
+        shell: pwsh
+        run: |
+          $u = [Environment]::GetEnvironmentVariable('Path','User'); $m = [Environment]::GetEnvironmentVariable('Path','Machine')
+          $env:Path = "$m;$u"
+          Remove-Item Env:HOME -ErrorAction SilentlyContinue
+          $script = "$env:USERPROFILE\Arbrain\arbrain\scripts\servidor.mjs"
+          Set-Location "$env:USERPROFILE\Arbrain\arbrain"
+          & $env:NODE_EXE $script arranque-automatico activar
+          $vbs = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\Arbrain Servidor.vbs"
+          Get-Content $vbs | Tee-Object -Append -FilePath "$env:RUNNER_TEMP\resultados.txt"
+          Set-Location 'C:\Windows\System32'
+          $t0 = Get-Date
+          Start-Process wscript.exe -ArgumentList "`"$vbs`""
+          for ($i = 0; $i -lt 120; $i++) { if ((& $env:NODE_EXE $script estado | Select-Object -First 1) -match 'Corriendo') { break }; Start-Sleep 5 }
+          "C · listo en $([int]((Get-Date) - $t0).TotalSeconds) s" | Tee-Object -Append -FilePath "$env:RUNNER_TEMP\resultados.txt"
+          & $env:NODE_EXE "$env:GITHUB_WORKSPACE\e2e\bienvenida-diag.mjs" C
+          & $env:NODE_EXE $script detener
+          & $env:NODE_EXE $script arranque-automatico desactivar
+          exit 0
+
+      - name: D · La app de escritorio enciende el servidor
+        shell: bash
+        run: |
+          set -uo pipefail
+          . ~/.arbrain/entorno.sh
+          cd ~/Arbrain/arbrain
+          node scripts/escritorio.mjs instalar --sin-abrir 2>&1 | tail -3 | tee -a "$RUNNER_TEMP/resultados.txt" || true
+          cat ~/.config/arbrain/escritorio.json 2>/dev/null | head -c 600 | tee -a "$RUNNER_TEMP/resultados.txt" || true
+          echo
+          exe="$LOCALAPPDATA/Programs/Arbrain/Arbrain.exe"
+          if [ ! -f "$exe" ]; then echo "D · sin Arbrain.exe" | tee -a "$RUNNER_TEMP/resultados.txt"; exit 0; fi
+          t0=$(date +%s)
+          powershell.exe -NoProfile -Command "Remove-Item Env:HOME -ErrorAction SilentlyContinue; Start-Process -FilePath '$(cygpath -w "$exe")' -WorkingDirectory 'C:\\Windows\\System32'"
+          for i in $(seq 1 120); do node scripts/servidor.mjs estado | head -1 | grep -q Corriendo && break; sleep 5; done
+          echo "D · listo en $(( $(date +%s) - t0 )) s" | tee -a "$RUNNER_TEMP/resultados.txt"
+          sleep 5
+          node "$GITHUB_WORKSPACE/e2e/bienvenida-diag.mjs" D || true
+          tail -40 "$APPDATA/ai.arbrain.servidor/logs/escritorio.log" 2>/dev/null | sed 's/^/D escritorio.log: /' | tee -a "$RUNNER_TEMP/resultados.txt" || true
+          node scripts/servidor.mjs detener
+          taskkill //IM Arbrain.exe //F >/dev/null 2>&1 || true
+
+      - name: Resumen
+        if: always()
+        shell: bash
+        run: |
+          { echo '```'; grep -E '^(ETAPA [A-D] (GET|POST|BIEN|MAL|archivo)|[A-D] · )' "$RUNNER_TEMP/resultados.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          ! grep -q '^ETAPA [A-D] MAL' "$RUNNER_TEMP/resultados.txt"
+
+      - name: Evidencia
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bienvenida-windows
+          path: |
+            ${{ runner.temp }}/resultados.txt
+            ${{ runner.temp }}/arranque-*.log
+            ${{ runner.temp }}/arranque-*.err
+            ${{ env.DATOS_W }}\logs\
+          retention-days: 14
