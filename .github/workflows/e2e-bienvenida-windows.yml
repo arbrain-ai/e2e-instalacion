@@ -26,6 +26,10 @@ on:
       node:
         default: '24.14'
         type: string
+      como_ivan:
+        description: 'Perfil «C:\\Users\\Aztec PC» (con espacio) y la copia en D:\\arBrain, como el fundador'
+        default: false
+        type: boolean
       sin_git:
         description: 'B, C y D sin Git en el PATH de Windows (Git instalado «solo para Git Bash»)'
         default: false
@@ -42,7 +46,19 @@ jobs:
       RELEASE: ${{ inputs.release }}
       ASSET: ${{ inputs.asset }}
       SIN_GIT: ${{ inputs.sin_git }}
+      COMO_IVAN: ${{ inputs.como_ivan }}
     steps:
+      - name: Perfil y carpeta de la copia
+        shell: pwsh
+        run: |
+          if ($env:COMO_IVAN -eq 'true') {
+            $p = 'C:\Users\Aztec PC'
+            New-Item -ItemType Directory -Force "$p\AppData\Roaming", "$p\AppData\Local" | Out-Null
+            "USERPROFILE=$p" >> $env:GITHUB_ENV; "HOME=$p" >> $env:GITHUB_ENV
+            "APPDATA=$p\AppData\Roaming" >> $env:GITHUB_ENV; "LOCALAPPDATA=$p\AppData\Local" >> $env:GITHUB_ENV
+            "REPO_W=D:\arBrain" >> $env:GITHUB_ENV
+          } else { "REPO_W=$env:USERPROFILE\Arbrain" >> $env:GITHUB_ENV }
+
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
@@ -58,11 +74,12 @@ jobs:
           set -euo pipefail
           if [ -n "$RELEASE" ]; then
             cd "$RUNNER_TEMP" && gh release download "$RELEASE" -R "$GITHUB_REPOSITORY" -p "$ASSET" -D .
-            git clone -q --origin dani "$ASSET" "$HOME/Arbrain"
+            git clone -q --origin dani "$ASSET" "$(cygpath -u "$REPO_W")"
           else
-            git clone -q --origin dani --branch "$ETIQUETA" https://github.com/arbrain-ai/arbrain.git "$HOME/Arbrain"
+            git clone -q --origin dani --branch "$ETIQUETA" https://github.com/arbrain-ai/arbrain.git "$(cygpath -u "$REPO_W")"
           fi
-          cd "$HOME/Arbrain"
+          cd "$(cygpath -u "$REPO_W")"
+          echo "HOME=$HOME · USERPROFILE=$USERPROFILE · APPDATA=$APPDATA · copia en $PWD" | tee -a "$GITHUB_STEP_SUMMARY"
           mkdir -p ~/.config/arbrain
           sed -n '/^arbrain-publicacion /p;/^arbrain-reserva /p' INSTALAR.md > ~/.config/arbrain/firmas-permitidas
           git switch -q -c mi-arbrain
@@ -77,7 +94,7 @@ jobs:
         run: |
           set -uo pipefail
           . ~/.arbrain/entorno.sh
-          cd ~/Arbrain/arbrain
+          cd "$(cygpath -u "$REPO_W")/arbrain"
           t0=$(date +%s)
           nohup node scripts/servidor.mjs --sin-navegador > "$RUNNER_TEMP/arranque-A.log" 2>&1 &
           node "$GITHUB_WORKSPACE/e2e/bienvenida-diag.mjs" A --completar || true
@@ -94,7 +111,7 @@ jobs:
           Remove-Item Env:HOME -ErrorAction SilentlyContinue
           Get-ChildItem Env: | Where-Object { $_.Name -match '^(MSYS|MSYSTEM|SHELL|TERM|SHLVL|OLDPWD|PWD|EXEPATH|MINGW|ORIGINAL_)' } | ForEach-Object { Remove-Item "Env:$($_.Name)" }
           $t0 = Get-Date
-          $script = "$env:USERPROFILE\Arbrain\arbrain\scripts\servidor.mjs"
+          $script = "$env:REPO_W\arbrain\scripts\servidor.mjs"
           Start-Process -FilePath $env:NODE_EXE -ArgumentList @($script, '--sin-navegador') -WorkingDirectory 'C:\Windows\System32' -WindowStyle Hidden -RedirectStandardOutput "$env:RUNNER_TEMP\arranque-B.log" -RedirectStandardError "$env:RUNNER_TEMP\arranque-B.err"
           & $env:NODE_EXE "$env:GITHUB_WORKSPACE\e2e\bienvenida-diag.mjs" B
           & $env:NODE_EXE $script detener
@@ -108,8 +125,8 @@ jobs:
           $env:Path = "$m;$u"
           if ($env:SIN_GIT -eq 'true') { $env:Path = ($env:Path -split ';' | Where-Object { $_ -and $_ -notmatch '\\Git\\' }) -join ';' }
           Remove-Item Env:HOME -ErrorAction SilentlyContinue
-          $script = "$env:USERPROFILE\Arbrain\arbrain\scripts\servidor.mjs"
-          Set-Location "$env:USERPROFILE\Arbrain\arbrain"
+          $script = "$env:REPO_W\arbrain\scripts\servidor.mjs"
+          Set-Location "$env:REPO_W\arbrain"
           & $env:NODE_EXE $script arranque-automatico activar
           $vbs = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\Arbrain Servidor.vbs"
           Get-Content $vbs | Tee-Object -Append -FilePath "$env:RUNNER_TEMP\resultados.txt"
@@ -127,7 +144,7 @@ jobs:
         run: |
           set -uo pipefail
           . ~/.arbrain/entorno.sh
-          cd ~/Arbrain/arbrain
+          cd "$(cygpath -u "$REPO_W")/arbrain"
           node scripts/escritorio.mjs instalar --sin-abrir 2>&1 | tail -3 | tee -a "$RUNNER_TEMP/resultados.txt" || true
           cat ~/.config/arbrain/escritorio.json 2>/dev/null | head -c 600 | tee -a "$RUNNER_TEMP/resultados.txt" || true
           echo
@@ -136,6 +153,9 @@ jobs:
           t0=$(date +%s)
           powershell.exe -NoProfile -Command "Remove-Item Env:HOME -ErrorAction SilentlyContinue; Start-Process -FilePath '$(cygpath -w "$exe")' -WorkingDirectory 'C:\\Windows\\System32'"
           node "$GITHUB_WORKSPACE/e2e/bienvenida-diag.mjs" D || true
+          # Qué muestra la ventana (punto 3: ¿se queda en «Encendiendo tu Arbrain…» con todo en 200?).
+          sleep 25; mkdir -p "$RUNNER_TEMP/evidencia"
+          powershell -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms,System.Drawing; \$b=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds; \$i=New-Object System.Drawing.Bitmap \$b.Width,\$b.Height; [System.Drawing.Graphics]::FromImage(\$i).CopyFromScreen(\$b.Location,[System.Drawing.Point]::Empty,\$b.Size); \$i.Save('$(cygpath -w "$RUNNER_TEMP/evidencia/pantalla-D.png")')" || true
           tail -40 "$APPDATA/ai.arbrain.servidor/logs/escritorio.log" 2>/dev/null | sed 's/^/D escritorio.log: /' | tee -a "$RUNNER_TEMP/resultados.txt" || true
           node scripts/servidor.mjs detener
           taskkill //IM Arbrain.exe //F >/dev/null 2>&1 || true
