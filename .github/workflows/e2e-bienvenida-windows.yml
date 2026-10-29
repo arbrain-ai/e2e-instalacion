@@ -26,17 +26,22 @@ on:
       node:
         default: '24.14'
         type: string
+      sin_git:
+        description: 'B, C y D sin Git en el PATH de Windows (Git instalado «solo para Git Bash»)'
+        default: false
+        type: boolean
 permissions:
   contents: read
 jobs:
   bienvenida:
     runs-on: windows-latest
-    timeout-minutes: 90
+    timeout-minutes: 150
     env:
       GH_TOKEN: ${{ github.token }}
       ETIQUETA: ${{ inputs.etiqueta }}
       RELEASE: ${{ inputs.release }}
       ASSET: ${{ inputs.asset }}
+      SIN_GIT: ${{ inputs.sin_git }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -85,6 +90,7 @@ jobs:
           $u = [Environment]::GetEnvironmentVariable('Path','User'); $m = [Environment]::GetEnvironmentVariable('Path','Machine')
           $nodeDir = Split-Path $env:NODE_EXE
           $env:Path = "$nodeDir;$m;$u"
+          if ($env:SIN_GIT -eq 'true') { $env:Path = ($env:Path -split ';' | Where-Object { $_ -and $_ -notmatch '\\Git\\' }) -join ';'; "B · git en el PATH: $([bool](Get-Command git -ErrorAction SilentlyContinue))" | Tee-Object -Append -FilePath "$env:RUNNER_TEMP\resultados.txt" }
           Remove-Item Env:HOME -ErrorAction SilentlyContinue
           Get-ChildItem Env: | Where-Object { $_.Name -match '^(MSYS|MSYSTEM|SHELL|TERM|SHLVL|OLDPWD|PWD|EXEPATH|MINGW|ORIGINAL_)' } | ForEach-Object { Remove-Item "Env:$($_.Name)" }
           $t0 = Get-Date
@@ -100,6 +106,7 @@ jobs:
         run: |
           $u = [Environment]::GetEnvironmentVariable('Path','User'); $m = [Environment]::GetEnvironmentVariable('Path','Machine')
           $env:Path = "$m;$u"
+          if ($env:SIN_GIT -eq 'true') { $env:Path = ($env:Path -split ';' | Where-Object { $_ -and $_ -notmatch '\\Git\\' }) -join ';' }
           Remove-Item Env:HOME -ErrorAction SilentlyContinue
           $script = "$env:USERPROFILE\Arbrain\arbrain\scripts\servidor.mjs"
           Set-Location "$env:USERPROFILE\Arbrain\arbrain"

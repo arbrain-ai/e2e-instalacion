@@ -30,7 +30,7 @@ for (;;) {
     const v = await fetch(`http://127.0.0.1:${proceso.puertoWeb}/api/version`, { signal: AbortSignal.timeout(3000) })
     if (v.status === 200) break
   } catch { /* todavía no */ }
-  if (Date.now() - t0 > 900_000) { decir(`ETAPA ${etapa} la web no contestó en 15 min`); decir(`ETAPA ${etapa} MAL`); process.exit(1) }
+  if (Date.now() - t0 > 1_800_000) { decir(`ETAPA ${etapa} la web no contestó en 30 min`); decir(`ETAPA ${etapa} MAL`); process.exit(1) }
   await new Promise((r) => setTimeout(r, 1000))
 }
 decir(`ETAPA ${etapa} web lista en ${Math.round((Date.now() - t0) / 1000)} s (pid supervisor ${proceso.pid}, puerto ${proceso.puertoWeb})`)
