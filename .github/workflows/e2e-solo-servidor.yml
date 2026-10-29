@@ -1,0 +1,81 @@
+# «Solo en tu servidor» (29 oct 2026): Arbrain instalado directo en un servidor Linux, sin computadora detrás, y la web
+# respondiendo por la red privada de Tailscale SIMULADA. El runner hace de VPS recién rentado: root con la llave de «su
+# computadora», sin Arbrain. Se instala la copia del alumno de una rama sin publicar (bundle de git en un release de
+# prueba «pre-solo-…» de ESTE repo; en arbrain-ai/arbrain no se publica nada), servida desde un espejo local con su
+# etiqueta firmada por una llave desechable que se AGREGA al ancla. Sin modelo y sin entrar a ninguna cuenta: los comandos
+# literales del PASO 3 de INSTALAR.md y luego arbrain/scripts/instalar/nube-solo-prueba.sh, que comprueba todo por
+# comando (ver su encabezado): nube.sh, nube.sh telefono (tailscale serve, nunca funnel), la tailnet simulada con HTTPS
+# verificado, el código de un solo uso solo en la terminal, entrar y /chat 200, el login oficial de Claude Code sin
+# pantalla mostrando su enlace, llave con tope, kill -9 y segunda corrida idempotente.
+name: E2E solo servidor · ubuntu-latest
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'Release de prueba de este repo con arbrain-solo.bundle'
+        default: 'pre-solo-servidor'
+        type: string
+      huellas:
+        description: 'ninguna = compila el programa en el servidor (prueba el código de la rama); publicadas = usa el de la versión publicada'
+        default: 'ninguna'
+        type: choice
+        options: [ninguna, publicadas]
+permissions:
+  contents: read
+jobs:
+  solo:
+    name: solo servidor · ubuntu-latest
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    steps:
+      - name: Copia del alumno (bundle del release de prueba)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REL: ${{ inputs.release }}
+        run: |
+          set -euo pipefail
+          gh release download "$REL" -R "$GITHUB_REPOSITORY" -p arbrain-solo.bundle -D "$RUNNER_TEMP"
+          git clone -q "$RUNNER_TEMP/arbrain-solo.bundle" "$RUNNER_TEMP/copia"
+          echo "Copia: $(git -C "$RUNNER_TEMP/copia" log -1 --format='%h %s') · VERSION $(cat "$RUNNER_TEMP/copia/VERSION")" | tee -a "$GITHUB_STEP_SUMMARY"
+          uname -a | tee -a "$GITHUB_STEP_SUMMARY"; ps -p 1 -o comm= | sed 's/^/PID 1: /' | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Pruebas del script y shellcheck
+        working-directory: ${{ runner.temp }}/copia
+        run: |
+          set -euo pipefail
+          bash arbrain/scripts/instalar/nube.test.sh | tee -a "$GITHUB_STEP_SUMMARY"
+          shellcheck --version | head -2
+          shellcheck -S warning -x arbrain/scripts/instalar/nube.sh arbrain/scripts/instalar/nube-solo-prueba.sh arbrain/scripts/instalar/nube.test.sh
+          echo "shellcheck -S warning: limpio" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Solo en tu servidor, de punta a punta (como root, máquina desechable)
+        env:
+          HUELLAS: ${{ inputs.huellas }}
+        run: |
+          set -o pipefail
+          sudo NUBE_PRUEBA_PLAZO_MIN=45 bash "$RUNNER_TEMP/copia/arbrain/scripts/instalar/nube-solo-prueba.sh" --copia "$RUNNER_TEMP/arbrain-solo.bundle" --huellas "$HUELLAS" 2>&1 | tee "$RUNNER_TEMP/solo.txt"
+          r=${PIPESTATUS[0]}
+          grep -E '^(OK|FAIL|NUBE_|·)' "$RUNNER_TEMP/solo.txt" >> "$GITHUB_STEP_SUMMARY" || true
+          exit "$r"
+
+      - name: Evidencia
+        if: always()
+        run: |
+          sudo cp /srv/nube-solo-prueba/evidencia.txt /srv/nube-solo-prueba/nube-*.log /srv/nube-solo-prueba/telefono.log /srv/nube-solo-prueba/tailnet.log "$RUNNER_TEMP/" 2>/dev/null || true
+          sudo journalctl -u arbrain --no-pager -n 200 > "$RUNNER_TEMP/journal-arbrain.txt" 2>&1 || true
+          sudo sh -c 'tail -n 200 /home/arbrain/.local/share/ai.arbrain.servidor/logs/*.log' > "$RUNNER_TEMP/logs-arbrain.txt" 2>&1 || true
+          sudo chmod a+r "$RUNNER_TEMP"/*.txt "$RUNNER_TEMP"/*.log 2>/dev/null || true
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: solo-servidor-ubuntu
+          path: |
+            ${{ runner.temp }}/solo.txt
+            ${{ runner.temp }}/evidencia.txt
+            ${{ runner.temp }}/nube-*.log
+            ${{ runner.temp }}/telefono.log
+            ${{ runner.temp }}/tailnet.log
+            ${{ runner.temp }}/journal-arbrain.txt
+            ${{ runner.temp }}/logs-arbrain.txt
+          retention-days: 14
