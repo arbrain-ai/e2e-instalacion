@@ -30,7 +30,14 @@ for (;;) {
     const v = await fetch(`http://127.0.0.1:${proceso.puertoWeb}/api/version`, { signal: AbortSignal.timeout(3000) })
     if (v.status === 200) break
   } catch { /* todavía no */ }
-  if (Date.now() - t0 > 1_800_000) { decir(`ETAPA ${etapa} la web no contestó en 30 min`); decir(`ETAPA ${etapa} MAL`); process.exit(1) }
+  if (Date.now() - t0 > Number(process.env.PLAZO_S || 1800) * 1000) {
+    decir(`ETAPA ${etapa} la web no contestó en ${process.env.PLAZO_S || 1800} s`)
+    for (const p of [process.env.ARRANQUE_LOG, join(datos, 'logs', 'servidor.log'), join(datos, 'logs', 'web.log'), join(datos, 'logs', 'daemon.log')].filter(Boolean)) {
+      if (!existsSync(p)) { decir(`ETAPA ${etapa} sin ${p}`); continue }
+      for (const l of readFileSync(p, 'utf8').split(/\r?\n/).filter(Boolean).slice(-40)) decir(`ETAPA ${etapa} ${p.split(/[\\/]/).pop()}: ${l.slice(0, 400)}`)
+    }
+    decir(`ETAPA ${etapa} MAL`); process.exit(1)
+  }
   await new Promise((r) => setTimeout(r, 1000))
 }
 decir(`ETAPA ${etapa} web lista en ${Math.round((Date.now() - t0) / 1000)} s (pid supervisor ${proceso.pid}, puerto ${proceso.puertoWeb})`)

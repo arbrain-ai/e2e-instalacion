@@ -97,7 +97,7 @@ jobs:
           cd "$(cygpath -u "$REPO_W")/arbrain"
           t0=$(date +%s)
           nohup node scripts/servidor.mjs --sin-navegador > "$RUNNER_TEMP/arranque-A.log" 2>&1 &
-          node "$GITHUB_WORKSPACE/e2e/bienvenida-diag.mjs" A --completar || true
+          ARRANQUE_LOG="$RUNNER_TEMP/arranque-A.log" PLAZO_S=1200 node "$GITHUB_WORKSPACE/e2e/bienvenida-diag.mjs" A --completar || true
           node scripts/servidor.mjs detener
           for i in $(seq 1 30); do [ -f "$APPDATA/ai.arbrain.servidor/daemon/config/servidor.json" ] || break; sleep 1; done
 
@@ -113,6 +113,7 @@ jobs:
           $t0 = Get-Date
           $script = "$env:REPO_W\arbrain\scripts\servidor.mjs"
           Start-Process -FilePath $env:NODE_EXE -ArgumentList @($script, '--sin-navegador') -WorkingDirectory 'C:\Windows\System32' -WindowStyle Hidden -RedirectStandardOutput "$env:RUNNER_TEMP\arranque-B.log" -RedirectStandardError "$env:RUNNER_TEMP\arranque-B.err"
+          $env:ARRANQUE_LOG = "$env:RUNNER_TEMP\arranque-B.err"
           & $env:NODE_EXE "$env:GITHUB_WORKSPACE\e2e\bienvenida-diag.mjs" B
           & $env:NODE_EXE $script detener
           for ($i = 0; $i -lt 30 -and (Test-Path "$env:DATOS_W\daemon\config\servidor.json"); $i++) { Start-Sleep 1 }
