@@ -21,7 +21,19 @@ const config = join(datos, 'daemon', 'config')
 const salida = process.env.RUNNER_TEMP ? join(process.env.RUNNER_TEMP, 'resultados.txt') : null
 const decir = (l) => { console.log(l); if (salida) appendFileSync(salida, l + '\n') }
 
-const proceso = JSON.parse(readFileSync(join(config, 'servidor.json'), 'utf8'))
+// Espera a que la web de ESTE arranque conteste (el control nace antes que la web; «estado» no basta).
+const t0 = Date.now()
+let proceso = null
+for (;;) {
+  try {
+    proceso = JSON.parse(readFileSync(join(config, 'servidor.json'), 'utf8'))
+    const v = await fetch(`http://127.0.0.1:${proceso.puertoWeb}/api/version`, { signal: AbortSignal.timeout(3000) })
+    if (v.status === 200) break
+  } catch { /* todavía no */ }
+  if (Date.now() - t0 > 900_000) { decir(`ETAPA ${etapa} la web no contestó en 15 min`); decir(`ETAPA ${etapa} MAL`); process.exit(1) }
+  await new Promise((r) => setTimeout(r, 1000))
+}
+decir(`ETAPA ${etapa} web lista en ${Math.round((Date.now() - t0) / 1000)} s (pid supervisor ${proceso.pid}, puerto ${proceso.puertoWeb})`)
 const base = `http://127.0.0.1:${proceso.puertoWeb}`
 const acceso = JSON.parse(readFileSync(join(config, 'acceso.json'), 'utf8'))
 const g = Number.isSafeInteger(Number(acceso.generacion)) ? Number(acceso.generacion) : 0

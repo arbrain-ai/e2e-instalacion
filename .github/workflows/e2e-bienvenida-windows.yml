@@ -75,10 +75,9 @@ jobs:
           cd ~/Arbrain/arbrain
           t0=$(date +%s)
           nohup node scripts/servidor.mjs --sin-navegador > "$RUNNER_TEMP/arranque-A.log" 2>&1 &
-          for i in $(seq 1 180); do node scripts/servidor.mjs estado | head -1 | grep -q Corriendo && break; sleep 5; done
-          echo "A · listo en $(( $(date +%s) - t0 )) s" | tee -a "$RUNNER_TEMP/resultados.txt"
           node "$GITHUB_WORKSPACE/e2e/bienvenida-diag.mjs" A --completar || true
           node scripts/servidor.mjs detener
+          for i in $(seq 1 30); do [ -f "$APPDATA/ai.arbrain.servidor/daemon/config/servidor.json" ] || break; sleep 1; done
 
       - name: B · PowerShell oculto con el entorno de una sesión de Windows
         shell: pwsh
@@ -91,10 +90,9 @@ jobs:
           $t0 = Get-Date
           $script = "$env:USERPROFILE\Arbrain\arbrain\scripts\servidor.mjs"
           Start-Process -FilePath $env:NODE_EXE -ArgumentList @($script, '--sin-navegador') -WorkingDirectory 'C:\Windows\System32' -WindowStyle Hidden -RedirectStandardOutput "$env:RUNNER_TEMP\arranque-B.log" -RedirectStandardError "$env:RUNNER_TEMP\arranque-B.err"
-          for ($i = 0; $i -lt 120; $i++) { if ((& $env:NODE_EXE $script estado | Select-Object -First 1) -match 'Corriendo') { break }; Start-Sleep 5 }
-          "B · listo en $([int]((Get-Date) - $t0).TotalSeconds) s" | Tee-Object -Append -FilePath "$env:RUNNER_TEMP\resultados.txt"
           & $env:NODE_EXE "$env:GITHUB_WORKSPACE\e2e\bienvenida-diag.mjs" B
           & $env:NODE_EXE $script detener
+          for ($i = 0; $i -lt 30 -and (Test-Path "$env:DATOS_W\daemon\config\servidor.json"); $i++) { Start-Sleep 1 }
           exit 0
 
       - name: C · Arranque automático real (VBS de Inicio por wscript)
@@ -111,11 +109,10 @@ jobs:
           Set-Location 'C:\Windows\System32'
           $t0 = Get-Date
           Start-Process wscript.exe -ArgumentList "`"$vbs`""
-          for ($i = 0; $i -lt 120; $i++) { if ((& $env:NODE_EXE $script estado | Select-Object -First 1) -match 'Corriendo') { break }; Start-Sleep 5 }
-          "C · listo en $([int]((Get-Date) - $t0).TotalSeconds) s" | Tee-Object -Append -FilePath "$env:RUNNER_TEMP\resultados.txt"
           & $env:NODE_EXE "$env:GITHUB_WORKSPACE\e2e\bienvenida-diag.mjs" C
           & $env:NODE_EXE $script detener
           & $env:NODE_EXE $script arranque-automatico desactivar
+          for ($i = 0; $i -lt 30 -and (Test-Path "$env:DATOS_W\daemon\config\servidor.json"); $i++) { Start-Sleep 1 }
           exit 0
 
       - name: D · La app de escritorio enciende el servidor
@@ -131,9 +128,6 @@ jobs:
           if [ ! -f "$exe" ]; then echo "D · sin Arbrain.exe" | tee -a "$RUNNER_TEMP/resultados.txt"; exit 0; fi
           t0=$(date +%s)
           powershell.exe -NoProfile -Command "Remove-Item Env:HOME -ErrorAction SilentlyContinue; Start-Process -FilePath '$(cygpath -w "$exe")' -WorkingDirectory 'C:\\Windows\\System32'"
-          for i in $(seq 1 120); do node scripts/servidor.mjs estado | head -1 | grep -q Corriendo && break; sleep 5; done
-          echo "D · listo en $(( $(date +%s) - t0 )) s" | tee -a "$RUNNER_TEMP/resultados.txt"
-          sleep 5
           node "$GITHUB_WORKSPACE/e2e/bienvenida-diag.mjs" D || true
           tail -40 "$APPDATA/ai.arbrain.servidor/logs/escritorio.log" 2>/dev/null | sed 's/^/D escritorio.log: /' | tee -a "$RUNNER_TEMP/resultados.txt" || true
           node scripts/servidor.mjs detener
@@ -143,7 +137,8 @@ jobs:
         if: always()
         shell: bash
         run: |
-          { echo '```'; grep -E '^(ETAPA [A-D] (GET|POST|BIEN|MAL|archivo)|[A-D] · )' "$RUNNER_TEMP/resultados.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          mkdir -p "$RUNNER_TEMP/evidencia" && cp -r "$RUNNER_TEMP"/resultados.txt "$RUNNER_TEMP"/arranque-* "$APPDATA/ai.arbrain.servidor/logs" "$RUNNER_TEMP/evidencia/" 2>/dev/null || true
+          { echo '```'; grep -E '^ETAPA [A-D] (GET|POST|BIEN|MAL|archivo|web|la web)' "$RUNNER_TEMP/resultados.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           ! grep -q '^ETAPA [A-D] MAL' "$RUNNER_TEMP/resultados.txt"
 
       - name: Evidencia
@@ -151,9 +146,5 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: bienvenida-windows
-          path: |
-            ${{ runner.temp }}/resultados.txt
-            ${{ runner.temp }}/arranque-*.log
-            ${{ runner.temp }}/arranque-*.err
-            ${{ env.DATOS_W }}\logs\
+          path: ${{ runner.temp }}/evidencia/
           retention-days: 14
