@@ -26,8 +26,8 @@ on:
       node:
         default: '24.14'
         type: string
-      como_ivan:
-        description: 'Perfil «C:\\Users\\Aztec PC» (con espacio) y la copia en D:\\arBrain, como el fundador'
+      perfil_con_espacio:
+        description: 'Perfil «C:\\Users\\Fulano de Tal» (con espacio) y la copia en D:\\MiArbrain, como un alumno real'
         default: false
         type: boolean
       sin_git:
@@ -37,6 +37,24 @@ on:
 permissions:
   contents: read
 jobs:
+  escritorio:
+    # La app de escritorio en Windows (cfg(windows): área útil del monitor con SPI_GETWORKAREA). Solo con copia de prueba.
+    if: inputs.release != ''
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: cargo check y cargo test del escritorio
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP" && gh release download "${{ inputs.release }}" -R "$GITHUB_REPOSITORY" -p "${{ inputs.asset }}" -D .
+          git clone -q "${{ inputs.asset }}" copia && cd copia/arbrain/escritorio
+          cargo check --locked 2>&1 | tail -3
+          cargo test --locked 2>&1 | tee "$RUNNER_TEMP/cargo-test.log" | tail -25
+          grep -q 'test result: ok' "$RUNNER_TEMP/cargo-test.log"
+          grep 'test result' "$RUNNER_TEMP/cargo-test.log" >> "$GITHUB_STEP_SUMMARY"
   bienvenida:
     runs-on: windows-latest
     timeout-minutes: 150
@@ -46,17 +64,17 @@ jobs:
       RELEASE: ${{ inputs.release }}
       ASSET: ${{ inputs.asset }}
       SIN_GIT: ${{ inputs.sin_git }}
-      COMO_IVAN: ${{ inputs.como_ivan }}
+      PERFIL_CON_ESPACIO: ${{ inputs.perfil_con_espacio }}
     steps:
       - name: Perfil y carpeta de la copia
         shell: pwsh
         run: |
-          if ($env:COMO_IVAN -eq 'true') {
-            $p = 'C:\Users\Aztec PC'
+          if ($env:PERFIL_CON_ESPACIO -eq 'true') {
+            $p = 'C:\Users\Fulano de Tal'
             New-Item -ItemType Directory -Force "$p\AppData\Roaming", "$p\AppData\Local" | Out-Null
             "USERPROFILE=$p" >> $env:GITHUB_ENV; "HOME=$p" >> $env:GITHUB_ENV
             "APPDATA=$p\AppData\Roaming" >> $env:GITHUB_ENV; "LOCALAPPDATA=$p\AppData\Local" >> $env:GITHUB_ENV
-            "REPO_W=D:\arBrain" >> $env:GITHUB_ENV
+            "REPO_W=D:\MiArbrain" >> $env:GITHUB_ENV
           } else { "REPO_W=$env:USERPROFILE\Arbrain" >> $env:GITHUB_ENV }
 
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0

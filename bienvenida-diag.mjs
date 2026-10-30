@@ -58,7 +58,7 @@ const pedir = async (ruta, cuerpo) => {
 if (completar) {
   const g0 = await pedir('/api/primer-arranque')
   const v = g0.j?.versionTextos
-  for (const c of [{ accion: 'aceptar', version: v }, { accion: 'nombre', nombre: 'Iván' }, { accion: 'completar' }]) {
+  for (const c of [{ accion: 'aceptar', version: v }, { accion: 'nombre', nombre: 'Fulano de Tal' }, { accion: 'completar' }]) {
     const r = await pedir('/api/primer-arranque', c)
     decir(`ETAPA ${etapa} POST ${c.accion} → ${r.status}${r.j?.error ? ` (${r.j.error})` : ''}`)
   }
@@ -86,6 +86,6 @@ for (const n of ['servidor.log', 'web.log']) {
   const lineas = readFileSync(p, 'utf8').split(/\r?\n/).filter(Boolean)
   for (const l of lineas.slice(-15)) decir(`ETAPA ${etapa} ${n}: ${l.slice(0, 300)}`)
 }
-const bien = r.status === 200 && r.j?.falta === false && r.j?.estado?.nombre === 'Iván'
+const bien = r.status === 200 && r.j?.falta === false && r.j?.estado?.nombre === 'Fulano de Tal'
 decir(`ETAPA ${etapa} ${bien ? 'BIEN' : 'MAL'}`)
 process.exit(bien ? 0 : 1)
